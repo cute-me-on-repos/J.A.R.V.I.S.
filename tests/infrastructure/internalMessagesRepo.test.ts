@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
 import { createThreadBriefRepo } from "../../src/infrastructure/db/threadBriefRepo.ts";
+import { cleanInboundText } from "../../src/domain/conversation.ts";
+import { STEER_PREFIXES, turnToInternal } from "../../src/domain/internalMessages.ts";
+import { syntheticTs } from "../../src/domain/slackLinks.ts";
+import { tellPrompt } from "../../src/domain/tellPrompt.ts";
 
 describe("hidden-message queries", () => {
   const add = (r: ReturnType<typeof createMessageRepo>, content: string, over: { role?: "user" | "assistant"; threadTs?: string; channelId?: string; at?: number; slackTs?: string } = {}) =>
@@ -20,12 +24,14 @@ describe("hidden-message queries", () => {
     expect(r.userTurnsStartingWith("C1", [], 10)).toEqual([]);
   });
 
-  test("a prefix matches exactly: case counts, and a typed Slack message with a look-alike opening is left out", () => {
+  test("a prefix matches exactly (case counts) and finds turns stored the way handleMessage stores them: cleaned text, synthetic slack_ts", () => {
     const r = createMessageRepo(openDatabase(":memory:"));
     add(r, "I stopped waiting after lunch", { at: 1 });
     add(r, "i stopped waiting after lunch", { at: 2 });
-    add(r, "[orca question] typed by a person", { at: 3, slackTs: "1700000000.000100" });
-    expect(r.userTurnsStartingWith("C1", ["I stopped waiting after ", "[orca question]"], 10).map((m) => m.content)).toEqual(["I stopped waiting after lunch"]);
+    add(r, cleanInboundText(tellPrompt("UTESTER", "restart it\nnow")), { at: 3, threadTs: "1.1", slackTs: syntheticTs(3000) });
+    const found = r.userTurnsStartingWith("C1", STEER_PREFIXES, 10);
+    expect(found.map((m) => m.content.slice(0, 26))).toEqual(["I stopped waiting after lu", "[tell from another thread]"]);
+    expect(turnToInternal(found[1]!)).toMatchObject({ kind: "tell", source: "UTESTER", text: "restart it now" });
   });
 
   test("wildcard characters in a prefix match only themselves", () => {

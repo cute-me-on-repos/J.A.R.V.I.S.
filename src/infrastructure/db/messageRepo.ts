@@ -147,11 +147,11 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
       recentThreadStmt.all(channelId, threadTs, Math.max(0, limit)).map(toMessage),
     userTurnsStartingWith: (channelId, prefixes, limit, threadTs) => {
       if (prefixes.length === 0 || limit <= 0) return [];
-      // Exact, case-sensitive prefix match (LIKE folds case, so a person typing "i stopped waiting" would take a slot). Internal turns are never a Slack message, so a row with a `slack_ts` is somebody typing a look-alike opening and is left out.
+      // Exact, case-sensitive prefix match (LIKE folds case, so a person typing "i stopped waiting" would take a slot). Nothing marks an internal turn in the row (it even carries a synthetic `slack_ts`), so a person typing a look-alike opening shows up too - accepted, the console is owner-only and read-only.
       const starts = prefixes.map(() => "substr(content, 1, length(?)) = ?").join(" OR ");
       const args = prefixes.flatMap((p) => [p, p]);
       const sql = `SELECT * FROM (
-         SELECT * FROM messages WHERE channel_id = ? AND role = 'user' AND slack_ts = '' AND (${starts})${threadTs === undefined ? "" : " AND thread_ts = ?"}
+         SELECT * FROM messages WHERE channel_id = ? AND role = 'user' AND (${starts})${threadTs === undefined ? "" : " AND thread_ts = ?"}
          ORDER BY id DESC LIMIT ?
        ) ORDER BY id ASC`;
       const rows = db
