@@ -43,7 +43,9 @@ export const MAX_INTERNAL_TEXT = 8_000;
 const LOOP_TAG = /^\[loop (\d+)\]/;
 const TELL_SENDER = /^\[tell from another thread\] <@([A-Z0-9]+)> sent this/;
 const STALE_SENDER = "The stale-promise sweep";
-const STEER_TAIL = "\n\n- Act on it.";
+/** Where the wrapper of `steerPrompt` ends and the message begins, and where the message ends - on the collapsed text that is stored. */
+const STEER_HEAD = "nobody here can see it. ";
+const STEER_TAIL = " - Act on it.";
 
 /** A watch hand-back's openings: `readyMessage` (plain, or led by the worker's state) and `gaveUpMessage`. */
 const WATCH_OPENINGS: readonly RegExp[] = [
@@ -67,11 +69,16 @@ export const STEER_PREFIXES: readonly string[] = [
 
 const clip = (s: string): string => (s.length > MAX_INTERNAL_TEXT ? `${s.slice(0, MAX_INTERNAL_TEXT)}\n... (${s.length - MAX_INTERNAL_TEXT} more characters cut)` : s);
 
-/** What a person (or the bot) said inside a steer prompt, without the "do not answer it in Slack" wrapper. */
+/**
+ * What a person (or the bot) said inside a steer prompt, without the "do not
+ * answer it in Slack" wrapper. The stored turn went through `cleanInboundText`,
+ * so its line breaks are already spaces: both cuts are matched on that form.
+ */
 const steerBody = (content: string): string => {
-  const start = content.indexOf("\n\n");
-  const end = content.lastIndexOf(STEER_TAIL);
-  return start >= 0 && end > start ? content.slice(start + 2, end) : content;
+  const flat = content.replace(/\s+/g, " ");
+  const start = flat.indexOf(STEER_HEAD);
+  const end = flat.lastIndexOf(STEER_TAIL);
+  return start >= 0 && end > start ? flat.slice(start + STEER_HEAD.length, end) : content;
 };
 
 /** The kind and sender of a stored user turn, or undefined for an ordinary message. */

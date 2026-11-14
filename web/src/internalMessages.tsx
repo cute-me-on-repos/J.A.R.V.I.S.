@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { KIND_META, previewOf, type InternalMessage } from "./internalTimeline.ts";
+import { fromLabel, KIND_META, previewOf, sourceLabel, type InternalMessage, type NameMaps } from "./internalTimeline.ts";
 
 const stamp = (ms: number): string => new Date(ms).toISOString().replace("T", " ").slice(5, 16);
 
@@ -9,7 +9,7 @@ const stamp = (ms: number): string => new Date(ms).toISOString().replace("T", " 
  * only. `onOpenThread` is given in the channel view, where the message names the
  * thread it went into.
  */
-export function InternalRow({ m, onOpenThread }: { m: InternalMessage; onOpenThread?: (root: string) => void }) {
+export function InternalRow({ m, names, onOpenThread }: { m: InternalMessage; names: NameMaps; onOpenThread?: (root: string) => void }) {
   const [open, setOpen] = useState(false);
   const meta = KIND_META[m.kind];
   const { shown, cut } = previewOf(m.text);
@@ -18,7 +18,7 @@ export function InternalRow({ m, onOpenThread }: { m: InternalMessage; onOpenThr
       <div className="msg-head">
         <span className="internal-icon" aria-hidden>{meta.icon}</span>
         <span className="badge member">{meta.label}</span>
-        <strong>{m.source}</strong>
+        <strong>{sourceLabel(m, names)}</strong>
         <span className="muted">{stamp(m.at)}</span>
         <span className="muted internal-note">not posted to Slack</span>
         <span className="msg-actions">
@@ -26,7 +26,7 @@ export function InternalRow({ m, onOpenThread }: { m: InternalMessage; onOpenThr
           {cut && <button className="link" onClick={() => setOpen(!open)}>{open ? "collapse" : "expand"}</button>}
         </span>
       </div>
-      {m.from && <div className="muted internal-from">from thread {m.from.channelId} / {m.from.threadTs}</div>}
+      {m.from && <div className="muted internal-from">from thread {fromLabel(m.from, names)}</div>}
       <div className="msg-body">{open || !cut ? m.text : shown}</div>
     </div>
   );

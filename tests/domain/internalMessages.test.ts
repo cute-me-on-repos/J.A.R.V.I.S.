@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { briefToInternal, classifyTurn, MAX_INTERNAL_TEXT, sortInternal, STEER_PREFIXES, turnToInternal } from "../../src/domain/internalMessages.ts";
+import { cleanInboundText } from "../../src/domain/conversation.ts";
 import { steerPrompt, tellPrompt } from "../../src/domain/tellPrompt.ts";
 import { nudgeText } from "../../src/domain/stalePromise.ts";
 import { driftNudge } from "../../src/domain/voiceDrift.ts";
@@ -12,14 +13,16 @@ const turn = (content: string, over: Partial<Parameters<typeof turnToInternal>[0
 
 describe("internal message classification", () => {
   test("a tell keeps the sender and only what was said, not the do-not-answer wrapper", () => {
-    const m = turn(tellPrompt("UTESTER", "restart the migration\nand report"));
-    expect(m).toMatchObject({ id: "turn:7", kind: "tell", source: "UTESTER", text: "restart the migration\nand report", at: 1000, threadTs: "5.5" });
+    // what the DB holds: the prompt after `cleanInboundText` collapsed its line breaks
+    const m = turn(cleanInboundText(tellPrompt("UTESTER", "restart the migration\nand report")));
+    expect(m).toMatchObject({ id: "turn:7", kind: "tell", source: "UTESTER", text: "restart the migration and report", at: 1000, threadTs: "5.5" });
   });
 
   test("the stale-promise sweep's steer is a nudge, not a tell", () => {
-    const m = turn(steerPrompt("The stale-promise sweep (a timer in the bot, not a person) sent this", nudgeText(600_000)));
+    const m = turn(cleanInboundText(steerPrompt("The stale-promise sweep (a timer in the bot, not a person) sent this", nudgeText(600_000))));
     expect(m).toMatchObject({ kind: "nudge", source: "stale-promise sweep" });
     expect(m?.text).toContain("promised further work 10 minutes ago");
+    expect(m?.text).not.toContain("Do NOT acknowledge");
   });
 
   test("a voice-drift nudge, an orca question and a loop fire each have their kind", () => {

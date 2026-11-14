@@ -73,6 +73,9 @@ export function ConsolePage() {
   const [memThreads, setMemThreads] = useState<MemoryThread[]>([]);
   /** Messages the bot steered sessions with that never reached Slack (tell, brief, ...), from its DB. */
   const [internal, setInternal] = useState<InternalMessage[]>([]);
+  /** The open thread's own hidden messages: asked for by thread, so an old thread is not cut by the channel's newest-300 window. */
+  const [threadInternal, setThreadInternal] = useState<InternalMessage[]>([]);
+  const [internalError, setInternalError] = useState("");
   const [showInternal, setShowInternal] = useState(true);
   /** Channels/threads whose stored memory was deleted from this page, to tell "cleared" from "never stored". */
   const [cleared, setCleared] = useState<ReadonlySet<string>>(new Set());
@@ -119,10 +122,27 @@ export function ConsolePage() {
     // Apart from the badges: losing the hidden messages must not take them down, nor the reverse.
     try {
       const found = await get<{ items: InternalMessage[] }>(`memory/internal?channel=${encodeURIComponent(ch)}`);
-      if (live.current.channel === ch) setInternal(found.items);
+      if (live.current.channel === ch) {
+        setInternal(found.items);
+        setInternalError("");
+      }
     } catch (e) {
-      if (live.current.channel === ch) setInternal([]);
-      setMemoryError((cur) => cur || `hidden messages unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      if (live.current.channel === ch) {
+        setInternal([]);
+        setInternalError(e instanceof Error ? e.message : String(e));
+      }
+    }
+  }, []);
+
+  const loadThreadInternal = useCallback(async (ch: string, root: string) => {
+    try {
+      const found = await get<{ items: InternalMessage[] }>(`memory/internal?channel=${encodeURIComponent(ch)}&thread=${encodeURIComponent(root)}`);
+      if (live.current.channel === ch && live.current.thread === root) setThreadInternal(found.items);
+    } catch (e) {
+      if (live.current.channel === ch && live.current.thread === root) {
+        setThreadInternal([]);
+        setInternalError(e instanceof Error ? e.message : String(e));
+      }
     }
   }, []);
 
@@ -161,6 +181,8 @@ export function ConsolePage() {
     setCursor(undefined);
     setMemThreads([]);
     setInternal([]);
+    setThreadInternal([]);
+    setInternalError("");
     run(() => reloadChannel(channel, limit));
     // limit changes reload the same channel without closing its thread (below)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -210,7 +232,7 @@ export function ConsolePage() {
   const refresh = () =>
     run(async () => {
       await reloadChannel(channel, limit);
-      if (thread) await reloadThread(channel, thread.root);
+      if (thread) await Promise.all([reloadThread(channel, thread.root), loadThreadInternal(channel, thread.root)]);
     });
 
   const send = (threadTs?: string) => {
@@ -251,6 +273,13 @@ export function ConsolePage() {
       await refreshAll(ch);
     }, "saving...");
   };
+
+  // The open thread's hidden messages, fetched for that thread alone.
+  const openRoot = thread?.root ?? "";
+  useEffect(() => {
+    setThreadInternal([]);
+    if (channel && openRoot) void loadThreadInternal(channel, openRoot);
+  }, [channel, openRoot, loadThreadInternal]);
 
   const refreshAll = async (ch: string) => {
     await reloadChannel(ch, limit);
@@ -307,7 +336,11 @@ export function ConsolePage() {
   });
 
   // One batched name lookup for every mention in the list and the open thread.
-  const slackNames = useSlackNames([...messages, ...(thread?.messages ?? [])].map((m) => m.text));
+  const slackNames = useSlackNames([
+    ...[...messages, ...(thread?.messages ?? [])].map((m) => m.text),
+    // the senders and source channels of hidden messages, so no bare id is shown
+    ...[...internal, ...threadInternal].flatMap((m) => [`<@${m.source}>`, ...(m.from ? [`<#${m.from.channelId}>`] : [])]),
+  ]);
   /** A `<#C…>` pill opens that channel only when it is in the sidebar. */
   const channelLink = (id: string) => (convos.some((c) => c.id === id) ? () => setChannel(id) : undefined);
 
@@ -326,13 +359,15 @@ export function ConsolePage() {
   ];
 
   /** Slack messages with the hidden ones interleaved by time (just the Slack ones when "show internal" is off or a filter hides them). */
-  const timeline = (msgs: readonly SlackMessage[], threadTs?: string, hasOlder = false) => {
+  const timeline = (msgs: readonly SlackMessage[], items: readonly InternalMessage[], threadTs?: string, hasOlder = false) => {
     const hidden =
       showInternal && mode === "all"
-        ? pickInternal(internal, { threadTs, since: oldestOnScreen(msgs, hasOlder), filter })
+        ? pickInternal(items, { threadTs, since: oldestOnScreen(msgs, hasOlder), filter })
         : [];
     return mergeTimeline(msgs, hidden);
   };
+
+  const channelTimeline = timeline(shown, internal, undefined, !!cursor);
 
   const marker = (m: SlackMessage) =>
     m.own ? <span className="badge assistant" title="your message">✎</span> : m.mentionsBot ? <span className="badge user" title="mentions you">@</span> : <span className="mk-space" />;
@@ -398,6 +433,7 @@ export function ConsolePage() {
       {error && <div className="banner error">{error}</div>}
       {status && <div className="banner ok">{status}</div>}
       {memoryError && <div className="banner error">DB memory badges unavailable: {memoryError}</div>}
+      {internalError && <div className="banner error">Hidden messages unavailable: {internalError}</div>}
       {copied && <div className="copy-toast" role="status">{copied}</div>}
 
       <div className={`slack${thread ? " with-thread" : ""}`}>
@@ -467,9 +503,9 @@ export function ConsolePage() {
                     messages.length > 0 && <span className="muted">beginning of conversation</span>
                   )}
                 </div>
-                {timeline(shown, undefined, !!cursor).length === 0 && <p className="muted" style={{ padding: 16 }}>No messages.</p>}
-                {timeline(shown, undefined, !!cursor).map((e) =>
-                  e.type === "slack" ? Row(e.message) : <InternalRow key={e.message.id} m={e.message} onOpenThread={openThreadRoot} />,
+                {channelTimeline.length === 0 && <p className="muted" style={{ padding: 16 }}>No messages.</p>}
+                {channelTimeline.map((e) =>
+                  e.type === "slack" ? Row(e.message) : <InternalRow key={e.message.id} m={e.message} names={slackNames} onOpenThread={openThreadRoot} />,
                 )}
               </div>
               {Composer(composer, setComposer)}
@@ -496,8 +532,8 @@ export function ConsolePage() {
               </span>
             </header>
             <div className="slack-msgs">
-              {timeline(thread.messages, thread.root).map((e) =>
-                e.type === "slack" ? Row(e.message, true) : <InternalRow key={e.message.id} m={e.message} />,
+              {timeline(thread.messages, threadInternal, thread.root).map((e) =>
+                e.type === "slack" ? Row(e.message, true) : <InternalRow key={e.message.id} m={e.message} names={slackNames} />,
               )}
             </div>
             {Composer(threadComposer, setThreadComposer, thread.root)}

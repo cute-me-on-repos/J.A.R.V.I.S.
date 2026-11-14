@@ -4,8 +4,8 @@ import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
 import { createThreadBriefRepo } from "../../src/infrastructure/db/threadBriefRepo.ts";
 
 describe("hidden-message queries", () => {
-  const add = (r: ReturnType<typeof createMessageRepo>, content: string, over: { role?: "user" | "assistant"; threadTs?: string; channelId?: string; at?: number } = {}) =>
-    r.append({ channelId: over.channelId ?? "C1", slackUserId: "U1", role: over.role ?? "user", content, threadTs: over.threadTs ?? "" }, over.at ?? 1);
+  const add = (r: ReturnType<typeof createMessageRepo>, content: string, over: { role?: "user" | "assistant"; threadTs?: string; channelId?: string; at?: number; slackTs?: string } = {}) =>
+    r.append({ channelId: over.channelId ?? "C1", slackUserId: "U1", role: over.role ?? "user", content, ...(over.slackTs ? { slackTs: over.slackTs } : {}), threadTs: over.threadTs ?? "" }, over.at ?? 1);
 
   test("userTurnsStartingWith finds user turns by prefix, per channel and optionally per thread, oldest first", () => {
     const r = createMessageRepo(openDatabase(":memory:"));
@@ -20,7 +20,15 @@ describe("hidden-message queries", () => {
     expect(r.userTurnsStartingWith("C1", [], 10)).toEqual([]);
   });
 
-  test("LIKE wildcards in a prefix match only themselves", () => {
+  test("a prefix matches exactly: case counts, and a typed Slack message with a look-alike opening is left out", () => {
+    const r = createMessageRepo(openDatabase(":memory:"));
+    add(r, "I stopped waiting after lunch", { at: 1 });
+    add(r, "i stopped waiting after lunch", { at: 2 });
+    add(r, "[orca question] typed by a person", { at: 3, slackTs: "1700000000.000100" });
+    expect(r.userTurnsStartingWith("C1", ["I stopped waiting after ", "[orca question]"], 10).map((m) => m.content)).toEqual(["I stopped waiting after lunch"]);
+  });
+
+  test("wildcard characters in a prefix match only themselves", () => {
     const r = createMessageRepo(openDatabase(":memory:"));
     add(r, "100% sure");
     add(r, "100x sure");

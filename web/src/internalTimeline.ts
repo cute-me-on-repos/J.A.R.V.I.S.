@@ -74,3 +74,16 @@ export const mergeTimeline = <M extends { ts: string }>(messages: readonly M[], 
 /** Where a message from this thread sits: the oldest Slack message's time on the page, when older pages remain. */
 export const oldestOnScreen = (messages: readonly { ts: string }[], hasOlder: boolean): number | undefined =>
   hasOlder && messages.length > 0 ? Math.min(...messages.map((m) => tsMs(m.ts))) : undefined;
+
+/** Resolved names, as `GET slack/names` returns them (`channels` without the `#`; "" or missing = unknown). */
+export type NameMaps = { users: Readonly<Record<string, string>>; channels: Readonly<Record<string, string>> };
+
+const USER_ID = /^[UW][A-Z0-9]+$/;
+
+/** Who sent a hidden message: a person's name when `source` is a Slack user id (the id only while it is unresolved), else the source as given. */
+export const sourceLabel = (m: InternalMessage, names: NameMaps): string =>
+  USER_ID.test(m.source) ? (names.users[m.source] ? `@${names.users[m.source]}` : m.source) : m.source;
+
+/** The thread a brief came from, as `#channel / ts` (the channel id while unresolved). */
+export const fromLabel = (from: { channelId: string; threadTs: string }, names: NameMaps): string =>
+  `${names.channels[from.channelId] ? `#${names.channels[from.channelId]}` : from.channelId} / ${from.threadTs}`;

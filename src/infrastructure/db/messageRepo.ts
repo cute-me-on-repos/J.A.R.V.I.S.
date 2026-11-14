@@ -147,11 +147,11 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
       recentThreadStmt.all(channelId, threadTs, Math.max(0, limit)).map(toMessage),
     userTurnsStartingWith: (channelId, prefixes, limit, threadTs) => {
       if (prefixes.length === 0 || limit <= 0) return [];
-      // `_` and `%` are wildcards in LIKE: escaped, so a prefix only ever matches itself.
-      const likes = prefixes.map(() => "content LIKE ? ESCAPE '\\'").join(" OR ");
-      const args = prefixes.map((p) => `${p.replace(/[\\%_]/g, "\\$&")}%`);
+      // Exact, case-sensitive prefix match (LIKE folds case, so a person typing "i stopped waiting" would take a slot). Internal turns are never a Slack message, so a row with a `slack_ts` is somebody typing a look-alike opening and is left out.
+      const starts = prefixes.map(() => "substr(content, 1, length(?)) = ?").join(" OR ");
+      const args = prefixes.flatMap((p) => [p, p]);
       const sql = `SELECT * FROM (
-         SELECT * FROM messages WHERE channel_id = ? AND role = 'user' AND (${likes})${threadTs === undefined ? "" : " AND thread_ts = ?"}
+         SELECT * FROM messages WHERE channel_id = ? AND role = 'user' AND slack_ts = '' AND (${starts})${threadTs === undefined ? "" : " AND thread_ts = ?"}
          ORDER BY id DESC LIMIT ?
        ) ORDER BY id ASC`;
       const rows = db

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeTimeline, oldestOnScreen, pickInternal, previewOf, PREVIEW_CHARS, KIND_META, type InternalMessage } from "../../web/src/internalTimeline.ts";
+import { mergeTimeline, oldestOnScreen, pickInternal, previewOf, PREVIEW_CHARS, KIND_META, sourceLabel, fromLabel, type InternalMessage } from "../../web/src/internalTimeline.ts";
 
 const hid = (id: string, at: number, over: Partial<InternalMessage> = {}): InternalMessage => ({ id, kind: "tell", source: "U1", text: "t", at, threadTs: "", ...over });
 const slack = (ts: string) => ({ ts });
@@ -39,5 +39,14 @@ describe("console hidden-message timeline", () => {
     const long = previewOf("x".repeat(PREVIEW_CHARS + 10));
     expect(long.cut).toBe(true);
     expect(long.shown.length).toBe(PREVIEW_CHARS + 1);
+  });
+
+  test("a sender id shows as a name once resolved and stays the id until then; other sources pass through", () => {
+    const names = { users: { UABCDEF: "Ada" }, channels: { CABCDEF: "ops" } };
+    expect(sourceLabel(hid("a", 1, { source: "UABCDEF" }), names)).toBe("@Ada");
+    expect(sourceLabel(hid("a", 1, { source: "UZZZZZZ" }), names)).toBe("UZZZZZZ");
+    expect(sourceLabel(hid("a", 1, { source: "watch hand-back" }), names)).toBe("watch hand-back");
+    expect(fromLabel({ channelId: "CABCDEF", threadTs: "1.1" }, names)).toBe("#ops / 1.1");
+    expect(fromLabel({ channelId: "CZZZZZZ", threadTs: "1.1" }, names)).toBe("CZZZZZZ / 1.1");
   });
 });
