@@ -184,7 +184,7 @@ no classes.
   local git as the app: it asks the bot for the `git-auth` action (installation
   token + `<slug>[bot]` identity) and gives that one git process the token in its
   environment (`GIT_CONFIG_*` `http.extraheader`), never in a url or a file.
-  An Orca worker outlives the turn's 20-minute ticket, so a turn mints it a
+  An Orca worker outlives the turn's 3-hour ticket, so a turn mints it a
   **worker ticket** (`worker-ticket`, `workerTickets.ts`; its token file also carries the bot's base URL on line 2 for the helper scripts, rows in
   `worker_tickets` holding only the token's sha-256): one repo, a short action
   list (the app's commit identity by default, so commits go out as the app with

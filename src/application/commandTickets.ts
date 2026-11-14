@@ -22,8 +22,13 @@
  */
 import type { Clock } from "./ports.ts";
 
-/** How long a ticket stays good - a long review turn, not a session. */
-export const TICKET_TTL_MS = 20 * 60_000;
+/**
+ * How long a ticket stays good: the longest turn, not a session. It was 20
+ * minutes, and a long self-fix turn (full test suite, then commit) outlived it
+ * and was refused mid-commit with "not valid any more" (2026-11-14). 3 hours
+ * matches the Slack helper ticket (`SLACK_TICKET_TTL_MS`).
+ */
+export const TICKET_TTL_MS = 3 * 60 * 60_000;
 /**
  * Commands one turn may trigger. High enough that real bulk work finishes and
  * only an unbounded loop reaches it; the TTL bounds it in time as well.
