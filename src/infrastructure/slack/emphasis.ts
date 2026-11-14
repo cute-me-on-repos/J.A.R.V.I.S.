@@ -20,8 +20,12 @@ export type EmphasisNormalizer = {
   flush: () => string;
 };
 
-/** A marker that could open emphasis (mirrors the opener half of `toSlackMarkdown`). */
-const OPENER = /(?<![*~\\\p{L}\p{N}])[*~](?![\s*~])/gu;
+/**
+ * A marker that could open emphasis. Per marker, with the same lookarounds as
+ * `BOLD` and `STRIKE` in `toSlackMarkdown`, so `*~x~*` is held like the whole
+ * text converts it.
+ */
+const OPENER = /(?<![*\\\p{L}\p{N}])\*(?![\s*])|(?<![~\\\p{L}\p{N}])~(?![\s~])/gu;
 
 /** Where a completed run starting at `i` ends, or -1 when it has no closer yet. */
 const closedAt = (s: string, i: number): number => {
@@ -45,13 +49,20 @@ const safeLength = (line: string): number => {
     .replace(/<[^<>\s][^<>\n]*>/g, (c) => "\u0001".repeat(c.length));
   const open = [masked.indexOf("`"), masked.search(/<(?!\s)/)].filter((i) => i !== -1);
   const limit = open.length > 0 ? Math.min(...open) : line.length;
+  // The closer of a run that already closed can look like an opener too
+  // (`*Status:*,`), so a marker inside a closed run of its own kind is skipped.
+  // A cut inside a closed run would split it, so the cut moves to its start.
+  const closed: { marker: string; start: number; end: number }[] = [];
+  const cutAt = (i: number): number => Math.min(i, ...closed.filter((r) => r.start < i && i < r.end).map((r) => r.start));
   OPENER.lastIndex = 0;
   for (const m of masked.matchAll(OPENER)) {
     if (m.index >= limit) break;
+    if (closed.some((r) => r.marker === m[0] && m.index < r.end)) continue;
     const end = closedAt(masked, m.index);
-    if (end === -1 || end >= masked.length) return m.index;
+    if (end === -1 || end >= masked.length) return cutAt(m.index);
+    closed.push({ marker: m[0], start: m.index, end });
   }
-  return limit;
+  return cutAt(limit);
 };
 
 export const createEmphasisNormalizer = (): EmphasisNormalizer => {

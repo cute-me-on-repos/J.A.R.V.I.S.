@@ -19,13 +19,21 @@ const SAMPLES = [
   "**already** *mixed* ~~done~~",
   "a *b\nnever closes\n*c* ok",
   "see <https://x.com/*a*|*label*> and *bold*",
+  // a closer that also looks like an opener (punctuation on both sides)
+  "*Status:*, done",
+  "*Kết quả (tuần 1)*: ổn",
+  "Xem *v1.2)*. ok",
+  // mixed markers
+  "*~x~* done",
+  "~*x*~ done",
+  "*a ~b* c~ end",
 ];
 
 describe("createEmphasisNormalizer", () => {
   for (const text of SAMPLES) {
     test(`same as the whole-text conversion at any slice size: ${JSON.stringify(text.slice(0, 24))}`, () => {
       for (let size = 1; size <= 13; size += 1) {
-        const want = feed(text, text.length).out;
+        const want = toSlackMarkdown(text);
         expect(feed(text, size).out).toBe(want);
       }
     });
