@@ -479,3 +479,100 @@ describe("the prompt", () => {
     expect(text).not.toContain("do not announce it and do not ask permission");
   });
 });
+
+describe("where the notice goes", () => {
+  const OWNER_DM = "D-owner-dm";
+  const THREAD = "1794660718.333719";
+  /** The fixture's Slack plus the three lookups the source check uses. */
+  const withSlack = (rootBy: string | undefined) => {
+    const d = build();
+    d.learningApproval = {
+      ...d.learningApproval!,
+      slack: {
+        ...d.slack!,
+        openDm: async () => OWNER_DM,
+        lookup: async (_c, ts) => ({ ts, userId: rootBy, broadcast: false, text: "root" }),
+        permalink: async (c, ts) => `https://example.slack.com/archives/${c}/p${ts.replace(".", "")}`,
+      },
+    };
+    return d;
+  };
+  const source = (channel: string) => ({ channel, threadTs: THREAD, runId: "sess-1" });
+
+  test("a turn in the owner's DM: the notice and buttons sit in that thread, and the press holds there", async () => {
+    const d = withSlack(undefined);
+    const r = await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source(OWNER_DM));
+    const row = d.learnings!.get(r.ok ? r.learning.id : -1)!;
+    expect(row).toMatchObject({ sourceChannel: OWNER_DM, sourceThreadTs: THREAD, sourceRunId: "sess-1" });
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER_DM, threadTs: THREAD });
+    expect(slackCalls.buttons).toHaveLength(2);
+    expect(row).toMatchObject({ noticeChannel: OWNER_DM });
+    expect(row.noticeTs).not.toBe("");
+    const out = await decideLearningPress(d.learningApproval!, {
+      slackUserId: OWNER,
+      actionId: LEARNING_APPROVE_ACTION,
+      value: String(row.id),
+      channel: row.noticeChannel,
+      messageTs: row.noticeTs,
+      shown: [approvalText(row.id, FACT, AGENT_SOURCE)],
+    });
+    expect(out).toEqual({ kind: "approved", id: row.id });
+    expect(slackCalls.settled.at(-1)).toMatchObject({ channel: OWNER_DM, ts: row.noticeTs });
+  });
+
+  test("a thread the owner started in a channel: the notice is posted there", async () => {
+    const d = withSlack(OWNER);
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("C0CHAN"));
+    expect(slackCalls.posts[0]).toMatchObject({ channel: "C0CHAN", threadTs: THREAD });
+    expect(d.learnings!.pending()[0]).toMatchObject({ noticeChannel: "C0CHAN" });
+  });
+
+  test("a thread someone else started: the owner's DM, top level, with a link to the thread", async () => {
+    const d = withSlack(MEMBER.slackId);
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("C0CHAN"));
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER });
+    expect(slackCalls.posts[0]?.threadTs).toBeUndefined();
+    expect(slackCalls.posts[0]?.text).toContain("https://example.slack.com/archives/C0CHAN/p1794660718333719");
+    expect(d.learnings!.pending()[0]).toMatchObject({ sourceChannel: "C0CHAN", noticeChannel: OWNER });
+  });
+
+  test("a member's own DM with the bot is not the owner's: fall back to the owner DM", async () => {
+    const d = withSlack(undefined);
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("D-member-dm"));
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER });
+    expect(slackCalls.posts[0]?.threadTs).toBeUndefined();
+  });
+
+  test("no source (a dead ticket): today's behaviour, no link", async () => {
+    const d = withSlack(OWNER);
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE);
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER });
+    expect(slackCalls.posts[0]?.text).not.toContain("this thread");
+    expect(d.learnings!.pending()[0]).toMatchObject({ sourceChannel: "", sourceThreadTs: "", sourceRunId: "" });
+  });
+
+  test("a thread post that fails falls back to the owner's DM", async () => {
+    const d = withSlack(OWNER);
+    const slack = d.learningApproval!.slack!;
+    d.learningApproval = { ...d.learningApproval!, slack: { ...slack, postInteractive: async () => { throw new Error("nope"); } } };
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("C0CHAN"));
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER });
+    expect(d.learnings!.pending()[0]?.noticeChannel).toBe(OWNER);
+  });
+
+  test("the migration adds the source columns to an older table", () => {
+    const old = openDatabase(":memory:");
+    for (const col of ["source_channel", "source_thread_ts", "source_run_id"]) old.exec(`ALTER TABLE learnings DROP COLUMN ${col}`);
+    old.exec("PRAGMA user_version = 38");
+    migrate(old);
+    migrate(old);
+    const repo = createLearningsRepo(old);
+    expect(repo.add("x", "agent", 1, "pending", source("C1")).sourceThreadTs).toBe(THREAD);
+  });
+
+  test("the prompt's curl carries the turn's ticket and session", () => {
+    const text = buildSystemPrompt({ botName: "Jarvis", learnUrl: "http://127.0.0.1:2002/api/learnings" });
+    expect(text).toContain("X-Jarvis-Ticket: $JARVIS_RUN_TICKET");
+    expect(text).toContain("X-Jarvis-Session: $BOT_SESSION_ID");
+  });
+});

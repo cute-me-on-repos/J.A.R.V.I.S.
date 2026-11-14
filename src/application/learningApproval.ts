@@ -3,8 +3,8 @@
  *
  * Only the owner typing `learn <fact>` saves one active. A member's `learn`, a
  * `learn` the agent runs for itself and every POST to the learnings API are
- * stored PENDING - they never reach a prompt - and put to the owner in a DM
- * with Approve / Reject buttons (or `learn approve <id>` / `learn reject <id>`).
+ * stored PENDING - they never reach a prompt - and put to the owner (in the thread of the turn that proposed it when that is the
+ * owner's own, otherwise in their DM) with Approve / Reject buttons (or `learn approve <id>` / `learn reject <id>`).
  * A press is handled HERE, in code, like `jv:loop:`: the model never sees these
  * buttons, because a model that could press its own Approve would make the
  * guard decorative.
@@ -25,6 +25,7 @@ import {
   oneLine,
   settledText,
   type DecisionRefusal,
+  type LearningSource,
 } from "../domain/learning.ts";
 import { SIGNATURES } from "../domain/messageFooter.ts";
 import type { Learning } from "../domain/types.ts";
@@ -73,22 +74,53 @@ export const saveActive = (deps: LearningApprovalDeps, fact: string, by: string)
   return { ok: true, id: l.id, warnings: [] };
 };
 
-/** Put a pending learning to the owner. A failed DM only logs: `learn pending` still lists it. */
+/**
+ * Is the turn's thread the owner's own? Their DM with the bot, or a thread they
+ * started anywhere: the notice (and the fact in it) then lands where the owner
+ * is already reading. A thread someone else started is not, whoever else is in
+ * it, so a member's conversation never carries the owner's decision.
+ */
+const ownerOwnsThread = async (deps: LearningApprovalDeps, channel: string, threadTs: string): Promise<boolean> => {
+  if (!channel || !threadTs || !deps.slack) return false;
+  const dm = await deps.slack.openDm?.(deps.ownerSlackId).catch(logAndIgnore("learning source owner dm"));
+  if (dm === channel) return true;
+  const root = await deps.slack.lookup?.(channel, threadTs).catch(logAndIgnore("learning source thread root"));
+  return root?.userId === deps.ownerSlackId;
+};
+
+/**
+ * Put a pending learning to the owner: in the thread of the turn that proposed
+ * it when that is the owner's own (the press check reads the posted message's
+ * channel and ts back from the row, so it holds wherever the notice lands),
+ * otherwise in the owner's DM with a link to that thread. A failed post only
+ * logs: `learn pending` still lists it.
+ */
 const askOwner = async (deps: LearningApprovalDeps, l: Learning, by: string): Promise<void> => {
   if (!deps.slack?.postDmInteractive) {
     deps.log?.(`learning #${l.id} pending, no way to DM the owner`);
     return;
   }
+  const actions = [
+    { actionId: LEARNING_APPROVE_ACTION, label: "Approve", value: String(l.id), style: "primary" },
+    { actionId: LEARNING_REJECT_ACTION, label: "Reject", value: String(l.id), style: "danger" },
+  ] as const;
+  const inThread =
+    !!deps.slack.postInteractive && (await ownerOwnsThread(deps, l.sourceChannel, l.sourceThreadTs));
+  const threaded = inThread
+    ? await deps.slack
+        .postInteractive?.(l.sourceChannel, approvalText(l.id, l.content, by), actions, l.sourceThreadTs, SIGNATURES.learning)
+        .catch(logAndIgnore("learning approval thread post"))
+    : undefined;
+  if (threaded) {
+    deps.learnings.setNotice(l.id, threaded.channel, threaded.ts);
+    return;
+  }
+  const link =
+    l.sourceChannel && l.sourceThreadTs
+      ? await deps.slack.permalink?.(l.sourceChannel, l.sourceThreadTs).catch(logAndIgnore("learning source permalink"))
+      : undefined;
   const notice = await deps.slack
-    .postDmInteractive(
-      deps.ownerSlackId,
-      approvalText(l.id, l.content, by),
-      [
-        { actionId: LEARNING_APPROVE_ACTION, label: "Approve", value: String(l.id), style: "primary" },
-        { actionId: LEARNING_REJECT_ACTION, label: "Reject", value: String(l.id), style: "danger" },
-      ],
-      SIGNATURES.learning,
-    )
+    .postDmInteractive(deps.ownerSlackId, approvalText(l.id, l.content, by, link), actions, SIGNATURES.learning)
     .catch(logAndIgnore("learning approval post"));
   if (notice) deps.learnings.setNotice(l.id, notice.channel, notice.ts);
   else deps.log?.(`learning #${l.id} pending, the owner DM did not go out`);
@@ -103,7 +135,12 @@ export type Proposed =
  * (a Slack id) or `AGENT_SOURCE`. The same fact already waiting is not asked
  * twice, so an agent that retries does not stack DMs.
  */
-export const proposeLearning = async (deps: LearningApprovalDeps, fact: string, by: string): Promise<Proposed> => {
+export const proposeLearning = async (
+  deps: LearningApprovalDeps,
+  fact: string,
+  by: string,
+  source?: LearningSource,
+): Promise<Proposed> => {
   const text = oneLine(fact);
   if (!text) return { ok: false, error: "Empty learning" };
   if (text.length > MAX_LEARNING_CHARS) {
@@ -115,7 +152,7 @@ export const proposeLearning = async (deps: LearningApprovalDeps, fact: string, 
   if (waiting.length >= MAX_PENDING) {
     return { ok: false, error: `${waiting.length} learnings are already waiting for the owner. Try again once they have decided.` };
   }
-  const l = deps.learnings.add(text, by, deps.clock(), "pending");
+  const l = deps.learnings.add(text, by, deps.clock(), "pending", source);
   deps.log?.(`learning #${l.id} proposed by ${by}, pending the owner`);
   await askOwner(deps, l, by);
   return { ok: true, learning: l };

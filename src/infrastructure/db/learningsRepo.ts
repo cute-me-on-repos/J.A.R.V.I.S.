@@ -9,7 +9,7 @@
  */
 import type { DbClient } from "./client.ts";
 import type { Learning } from "../../domain/types.ts";
-import type { LearningStatus } from "../../domain/learning.ts";
+import type { LearningSource, LearningStatus } from "../../domain/learning.ts";
 
 type Row = {
   id: number;
@@ -19,6 +19,9 @@ type Row = {
   status: LearningStatus;
   notice_channel: string;
   notice_ts: string;
+  source_channel: string;
+  source_thread_ts: string;
+  source_run_id: string;
 };
 
 const toLearning = (row: Row): Learning => ({
@@ -29,6 +32,9 @@ const toLearning = (row: Row): Learning => ({
   status: row.status,
   noticeChannel: row.notice_channel,
   noticeTs: row.notice_ts,
+  sourceChannel: row.source_channel,
+  sourceThreadTs: row.source_thread_ts,
+  sourceRunId: row.source_run_id,
 });
 
 export type LearningsRepo = {
@@ -39,7 +45,7 @@ export type LearningsRepo = {
   /** Any learning whatever its status. */
   get: (id: number) => Learning | undefined;
   /** The status is explicit: nothing is saved active by accident. */
-  add: (content: string, createdBy: string, createdAt: number, status: LearningStatus) => Learning;
+  add: (content: string, createdBy: string, createdAt: number, status: LearningStatus, source?: LearningSource) => Learning;
   /** New wording, and the status it now has (a rewording by anyone but the owner is pending again). */
   update: (id: number, content: string, status: LearningStatus) => void;
   /** Where the owner's Approve / Reject message for a pending learning lives. */
@@ -58,8 +64,8 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
   );
   const getStmt = db.query<Row, { $id: number }>("SELECT * FROM learnings WHERE id = $id");
   const insertStmt = db.query(
-    `INSERT INTO learnings (content, created_by, created_at, status)
-     VALUES ($content, $createdBy, $createdAt, $status) RETURNING *`,
+    `INSERT INTO learnings (content, created_by, created_at, status, source_channel, source_thread_ts, source_run_id)
+     VALUES ($content, $createdBy, $createdAt, $status, $sourceChannel, $sourceThreadTs, $sourceRunId) RETURNING *`,
   );
   const updateStmt = db.query(
     `UPDATE learnings
@@ -84,12 +90,15 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
       const row = getStmt.get({ $id: id });
       return row ? toLearning(row) : undefined;
     },
-    add: (content, createdBy, createdAt, status) => {
+    add: (content, createdBy, createdAt, status, source) => {
       const row = insertStmt.get({
         $content: content,
         $createdBy: createdBy,
         $createdAt: createdAt,
         $status: status,
+        $sourceChannel: source?.channel ?? "",
+        $sourceThreadTs: source?.threadTs ?? "",
+        $sourceRunId: source?.runId ?? "",
       }) as Row;
       return toLearning(row);
     },

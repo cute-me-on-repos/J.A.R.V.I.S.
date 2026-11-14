@@ -76,6 +76,10 @@ export type Learning = {
   /** Where the owner's Approve / Reject message lives, so a press can be checked against it. */
   readonly noticeChannel: string;
   readonly noticeTs: string;
+  /** The turn that proposed it (empty when unknown): where the owner's notice goes and what it links back to. */
+  readonly sourceChannel: string;
+  readonly sourceThreadTs: string;
+  readonly sourceRunId: string;
 };
 
 /** Editable pieces that shape the bot's system prompt. */

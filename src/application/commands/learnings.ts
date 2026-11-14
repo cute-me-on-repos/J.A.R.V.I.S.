@@ -11,7 +11,7 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
     minRole: "executer",
     usage: "<fact>|pending|approve <id>|reject <id>",
     summary: "teach me a durable fact (the owner's is saved, anyone else's waits for the owner's approval)",
-    run: async ({ deps, actor, rest, prefix, fromBrainRun }) => {
+    run: async ({ deps, actor, rest, prefix, fromBrainRun, channelId, threadTs, messageTs }) => {
       const la = deps.learningApproval;
       if (!la) return "Learnings are not available.";
       const owner = actor.role === "owner";
@@ -64,7 +64,12 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
             : "";
         return `Learned it${saved.id === undefined ? "" : ` (#${saved.id})`}. I will keep that in mind.${nag}`;
       }
-      const proposed = await proposeLearning(la, fact, fromBrainRun ? AGENT_SOURCE : actor.slackId);
+      const proposed = await proposeLearning(
+        la,
+        fact,
+        fromBrainRun ? AGENT_SOURCE : actor.slackId,
+        { channel: channelId, threadTs: threadTs ?? messageTs ?? "", runId: "" },
+      );
       return proposed.ok ? pendingReply(proposed.learning.id, prefix) : proposed.error;
     },
   },

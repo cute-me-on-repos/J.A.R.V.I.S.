@@ -893,6 +893,10 @@ const main = async () => {
       messages,
       learnings,
       learningApproval,
+      learningSource: (ticket) => {
+        const r = commandTickets.redeem(ticket);
+        return r.ok ? { channel: r.ctx.channel, threadTs: r.ctx.threadTs ?? r.ctx.messageTs ?? "" } : undefined;
+      },
       kitViews,
       stats: createStatsRepo(db),
       threadSessions,
