@@ -64,6 +64,8 @@ export type DashboardDeps = {
    * (`learningApproval`), which files it into the adapter once approved.
    */
   adapter?: MemoryAdapterPort;
+  /** Where the turn holding this run ticket is talking, so its learning notice can go there; none for a dead ticket. */
+  learningSource?: (ticket: string) => { channel: string; threadTs: string } | undefined;
   /** Owner approval of every learning written through the API; without it the learnings endpoints refuse. */
   learningApproval?: LearningApprovalDeps;
   settings: SettingsRepo;
@@ -390,8 +392,13 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           return reply(app.assignRole(body.slackId, body.role));
         case "/api/kit/views":
           return reply(app.saveKitView(body.view));
-        case "/api/learnings":
-          return reply(await app.teach(body.content));
+        case "/api/learnings": {
+          // The turn's own ticket says where it ran; without a live one the learning simply has no source.
+          const ticket = req.headers.get("x-jarvis-ticket")?.trim() ?? "";
+          const found = ticket ? deps.learningSource?.(ticket) : undefined;
+          const runId = req.headers.get("x-jarvis-session")?.trim() ?? "";
+          return reply(await app.teach(body.content, found ? { ...found, runId } : undefined));
+        }
         case "/api/learnings/update":
           return reply(await app.updateLearning(body.id, body.content));
         case "/api/learnings/remove":

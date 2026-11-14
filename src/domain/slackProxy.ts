@@ -88,8 +88,15 @@ const toParams = (raw: unknown): Record<string, string> | undefined => {
   return out;
 };
 
+/**
+ * Is this message one of the bot's own approval notices (a learning, loop,
+ * command approval, access request or cloudwatch request)? Answered from what
+ * the bot stored when it posted them, so no Slack read is needed per call.
+ */
+export type IsNotice = (channel: string, ts: string) => boolean;
+
 /** Decide whether this call may go to Slack. Never throws. */
-export const checkSlackCall = (method: unknown, rawParams: unknown, scope: SlackScope): SlackCallCheck => {
+export const checkSlackCall = (method: unknown, rawParams: unknown, scope: SlackScope, isNotice?: IsNotice): SlackCallCheck => {
   if (typeof method !== "string" || !METHOD_NAME.test(method)) return refuse(400, "method is required");
   const isRead = READ_METHODS.has(method);
   const isWrite = Object.hasOwn(WRITE_METHODS, method);
@@ -114,6 +121,11 @@ export const checkSlackCall = (method: unknown, rawParams: unknown, scope: Slack
   const channelParam = WRITE_METHODS[method];
   if (channelParam && params[channelParam] !== scope.channel) {
     return refuse(403, `channel_not_allowed: ${method} may only act in the channel this turn runs in (${scope.channel})`);
+  }
+  // A notice's buttons decide things, and a notice can sit in a thread the turn runs in: a turn that could rewrite one
+  // could relabel a button so the owner's click means something else. The turn's own messages stay editable.
+  if (method === "chat.update" && params.ts && isNotice?.(scope.channel, params.ts)) {
+    return refuse(403, "message_not_allowed: chat.update may not rewrite an approval notice, only the turn's own messages");
   }
   // `channels` is the older way to share a file into several places at once.
   if (method === "files.completeUploadExternal" && params.channels !== undefined) {
