@@ -42,11 +42,10 @@ const ports = (over: Partial<DashboardPorts> = {}) => {
       remove: (id) => void users.delete(id),
     },
     messages: {
-      channels: () => [{ channelId: "C1" }],
+      channels: () => [{ channelId: "C1", count: 4, lastAt: 9 }],
       count: () => 3,
-      channelsPage: () => ({ channels: [{ channelId: "C1" }] }),
-      pageForChannel: (c, _before, limit) => ({ messages: [{ slackUserId: `U-${c}-${limit}`, content: "hi" }] }),
-      countForChannel: () => 1,
+      threads: (c) => [{ threadTs: `${c}.1`, count: 2, lastAt: 7 }],
+      clearThread: (c, t) => cleared.push(`${c}/${t}`),
       clearChannel: (c) => cleared.push(c),
     },
     learnings: {
@@ -198,17 +197,32 @@ describe("dashboard use cases", () => {
     expect(app.commands().disabled).toEqual(["bomb"]);
   });
 
-  test("conversations page with a clamped size and ignore a blank channel on clear", async () => {
+  test("memory lists what the DB holds per channel and thread, and clear scopes to a thread when asked", () => {
     const { app, cleared } = ports();
-    expect((await app.conversation("")).messages).toEqual([]);
-    expect((await app.conversation("C1")).messages).toEqual([
-      { slackUserId: "U-C1-50", content: "hi", userLabel: "unknown (U-C1-50)" },
-    ]);
-    expect((await app.conversation("C1", null, "9999")).messages[0]?.slackUserId).toBe("U-C1-200");
-    expect((await app.conversation("C1", "abc", "nope")).messages[0]?.slackUserId).toBe("U-C1-50");
-    app.clearConversation("  ");
+    expect(app.memoryChannels()).toEqual([{ channelId: "C1", count: 4, lastAt: 9 }]);
+    expect(app.memoryThreads("")).toEqual([]);
+    expect(app.memoryThreads(" C1 ")).toEqual([{ threadTs: "C1.1", count: 2, lastAt: 7 }]);
+    expect(app.clearConversation("  ")).toMatchObject({ ok: false });
     app.clearConversation(" C1 ");
-    expect(cleared).toEqual(["C1"]);
+    app.clearConversation("C1", " 10.5 ");
+    expect(cleared).toEqual(["C1", "C1/10.5"]);
+  });
+
+  test("clearing drops the thread sessions too, and a blank thread never widens to the channel", () => {
+    const drops: string[] = [];
+    const { app, cleared } = ports({
+      threadSessions: { drop: (c, t) => drops.push(`${c}/${t}`), dropChannel: (c) => drops.push(c) },
+    });
+    expect(app.clearConversation("C1", "10.5")).toEqual({ ok: true, value: null });
+    expect(app.clearConversation("C1")).toEqual({ ok: true, value: null });
+    expect(drops).toEqual(["C1/10.5", "C1"]);
+    for (const blank of ["", "  ", null]) {
+      expect(app.clearConversation("C1", blank)).toMatchObject({ ok: false });
+    }
+    expect(app.clearConversation("  ", "10.5")).toMatchObject({ ok: false });
+    // nothing beyond the two real clears ran
+    expect(cleared).toEqual(["C1/10.5", "C1"]);
+    expect(drops).toHaveLength(2);
   });
 
   test("usage reports not recording without a store, and clamps its window", async () => {
@@ -416,7 +430,7 @@ describe("dashboard GitHub links", () => {
 });
 
 describe("dashboard names", () => {
-  test("conversations, their turns, the command log and spend never show a bare id", async () => {
+  test("the command log and spend never show a bare id", async () => {
     const names = createNameResolver({
       clock: () => 0,
       lookups: {
@@ -427,56 +441,13 @@ describe("dashboard names", () => {
     });
     const { app } = ports({
       names,
-      messages: {
-        channels: () => [{ channelId: "C1" }, { channelId: "D1" }],
-        count: () => 0,
-        channelsPage: () => ({ channels: [{ channelId: "C1" }, { channelId: "D1" }] }),
-        pageForChannel: () => ({
-          messages: [
-            { slackUserId: "U2", content: "ask <@U3|old> about it" },
-            { slackUserId: "U3", content: "ok" },
-          ],
-        }),
-        countForChannel: () => 2,
-        clearChannel: () => undefined,
-      },
       commandLog: { recent: () => [{ slackUserId: "U2", channelId: "D1" }], clear: () => undefined },
       usage: { totals: () => ({}), byUser: () => [{ key: "U2" }], byKind: () => [] },
     });
-    expect((await app.conversations()).channels.map((c) => c.label)).toEqual(["#team-chat (C1)", "@Bea (D1)"]);
-    const convo = await app.conversation("C1");
-    expect(convo.channel.label).toBe("#team-chat (C1)");
-    expect(convo.messages.map((m) => m.userLabel)).toEqual(["Bea (U2)", "unknown (U3)"]);
-    expect(convo.messages[0]?.content).toBe("ask @unknown (U3) about it");
     expect(await app.commandLog()).toEqual([
       { slackUserId: "U2", channelId: "D1", userLabel: "Bea (U2)", channelLabel: "@Bea (D1)" },
     ]);
     expect(await app.usage("1")).toMatchObject({ names: { U2: "Bea (U2)" } });
-  });
-});
-
-describe("conversation cursors", () => {
-  test("passes the cursor through and returns the next one", async () => {
-    const seen: unknown[] = [];
-    const { app } = ports({
-      messages: {
-        channels: () => [],
-        count: () => 0,
-        channelsPage: (cursor, limit) => {
-          seen.push(["channels", cursor, limit]);
-          return { channels: [{ channelId: "C1" }], nextCursor: "5:C1" };
-        },
-        pageForChannel: (c, before, limit) => {
-          seen.push(["page", c, before, limit]);
-          return { messages: [{ slackUserId: "U1", content: "x" }], nextBefore: 7 };
-        },
-        countForChannel: () => 42,
-        clearChannel: () => undefined,
-      },
-    });
-    expect(await app.conversations("9:C2", "10")).toMatchObject({ nextCursor: "5:C1", channels: [{ channelId: "C1" }] });
-    expect(await app.conversation("C1", "12", null)).toMatchObject({ nextBefore: 7, total: 42 });
-    expect(seen).toEqual([["channels", "9:C2", 10], ["page", "C1", 12, 50]]);
   });
 });
 

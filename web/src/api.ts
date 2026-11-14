@@ -122,27 +122,10 @@ export type Identity = {
   usingDefault: boolean;
   defaultPersona: string;
 };
-/** `label` is always name + id: `#team-chat (C0…)`, a DM as `@Person (D0…)`. */
-export type Channel = { channelId: string; count: number; lastAt: number; label: string };
-export type Message = {
-  id: number;
-  channelId: string;
-  slackUserId: string;
-  /** `Name (U0…)` - never a bare id. */
-  userLabel: string;
-  role: "user" | "assistant";
-  content: string;
-  createdAt: number;
-};
-/** One page of a conversation, oldest-first; `nextBefore` fetches the page above it. */
-export type ConversationView = {
-  channel: { id: string; label: string };
-  messages: Message[];
-  total: number;
-  nextBefore?: number;
-};
-/** One page of the conversation list; `nextCursor` fetches the next. */
-export type ChannelPage = { channels: Channel[]; nextCursor?: string };
+/** What the bot's DB holds for a Slack channel (`/api/memory/channels`); a channel with no row has nothing stored. */
+export type MemoryChannel = { channelId: string; count: number; lastAt: number };
+/** The same per thread (`/api/memory/threads`), keyed by the thread root's ts. */
+export type MemoryThread = { threadTs: string; count: number; lastAt: number };
 
 /** A workspace member from the Users page search. `role` is set when they are already on the list. */
 export type SlackMember = {

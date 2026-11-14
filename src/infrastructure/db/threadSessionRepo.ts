@@ -40,6 +40,8 @@ export type ThreadSessionRepo = {
   move: (fromChannel: string, fromTs: string, toChannel: string, toTs: string, lastTs: string) => void;
   /** Forget it - the CLI no longer has it, or someone asked for a fresh start. */
   drop: (channelId: string, threadTs: string, tier?: SessionTier) => void;
+  /** Forget every thread session in one channel. */
+  dropChannel: (channelId: string) => void;
 };
 
 type Row = { session_id: string; last_ts: string; turns: number; created_at: number; used_at: number; prompt_hash: string };
@@ -66,6 +68,8 @@ export const createThreadSessionRepo = (db: DbClient): ThreadSessionRepo => {
     "DELETE FROM thread_sessions WHERE channel_id = $channel AND thread_ts = $thread",
   );
 
+  const dropChannelStmt = db.query("DELETE FROM thread_sessions WHERE channel_id = $channel");
+
   const moveStmt = db.query(
     "UPDATE thread_sessions SET channel_id = $toChannel, thread_ts = $toTs, last_ts = $lastTs WHERE channel_id = $channel AND thread_ts = $thread",
   );
@@ -85,6 +89,9 @@ export const createThreadSessionRepo = (db: DbClient): ThreadSessionRepo => {
     },
     touch: (channelId, threadTs, tier, lastTs, now) => {
       touchStmt.run({ $channel: channelId, $thread: threadTs, $tier: tier, $lastTs: lastTs, $now: now });
+    },
+    dropChannel: (channelId) => {
+      dropChannelStmt.run({ $channel: channelId });
     },
     drop: (channelId, threadTs, tier) => {
       if (tier) dropStmt.run({ $channel: channelId, $thread: threadTs, $tier: tier });

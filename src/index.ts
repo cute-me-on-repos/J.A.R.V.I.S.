@@ -895,6 +895,7 @@ const main = async () => {
       learningApproval,
       kitViews,
       stats: createStatsRepo(db),
+      threadSessions,
       adapter: adapterStore.exists()
         ? {
             status: () => adapterStatus(adapterDeps()),

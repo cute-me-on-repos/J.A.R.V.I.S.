@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
+import { migrate } from "../../src/infrastructure/db/schema.ts";
+import { createThreadSessionRepo } from "../../src/infrastructure/db/threadSessionRepo.ts";
 import { createLearningsRepo } from "../../src/infrastructure/db/learningsRepo.ts";
 import { createKitViewRepo } from "../../src/infrastructure/db/kitViewRepo.ts";
 import { createSettingsRepo, SETTING_KEYS } from "../../src/infrastructure/db/settingsRepo.ts";
@@ -359,6 +361,39 @@ describe("dashboard mutations", () => {
     expect(settings.get(SETTING_KEYS.systemPrompt)).toBeUndefined();
   });
 
+  test("conversation clear with a threadTs wipes only that thread", async () => {
+    const { dash, messages } = build();
+    messages.append({ channelId: "C9", slackUserId: "U1", role: "user", content: "top" }, 1);
+    messages.append({ channelId: "C9", slackUserId: "U1", role: "user", content: "t1", threadTs: "5.1" }, 2);
+    messages.append({ channelId: "C9", slackUserId: "U1", role: "user", content: "t2", threadTs: "6.1" }, 3);
+    await dash.handle(postJson(`/api/conversation/clear`, { channel: "C9", threadTs: "5.1" }));
+    expect(messages.recentForChannel("C9", 10).map((m) => m.content)).toEqual(["top", "t2"]);
+  });
+
+  test("a thread clear with a blank threadTs is refused and wipes nothing", async () => {
+    const { dash, messages } = build();
+    messages.append({ channelId: "C9", slackUserId: "U1", role: "user", content: "t1", threadTs: "5.1" }, 1);
+    const res = await dash.handle(postJson(`/api/conversation/clear`, { channel: "C9", threadTs: " " }));
+    expect(res.status).toBe(400);
+    expect(messages.recentForChannel("C9", 10)).toHaveLength(1);
+  });
+
+  test("clearing from the console drops the thread sessions it would replay", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const threadSessions = createThreadSessionRepo(db);
+    threadSessions.claim("C9", "5.1", "full", "s1", "5.1", 1, "h");
+    threadSessions.claim("C9", "6.1", "full", "s2", "6.1", 1, "h");
+    threadSessions.claim("C8", "6.1", "full", "s3", "6.1", 1, "h");
+    const { dash } = build({ threadSessions });
+    await dash.handle(postJson(`/api/conversation/clear`, { channel: "C9", threadTs: "5.1" }));
+    expect(threadSessions.find("C9", "5.1", "full")).toBeUndefined();
+    expect(threadSessions.find("C9", "6.1", "full")?.sessionId).toBe("s2");
+    await dash.handle(postJson(`/api/conversation/clear`, { channel: "C9" }));
+    expect(threadSessions.find("C9", "6.1", "full")).toBeUndefined();
+    expect(threadSessions.find("C8", "6.1", "full")?.sessionId).toBe("s3");
+  });
+
   test("conversation clear wipes a channel", async () => {
     const { dash, messages } = build();
     messages.append({ channelId: "C9", slackUserId: "U1", role: "user", content: "x" }, 1);
@@ -578,38 +613,25 @@ describe("editing memory files by hand", () => {
 });
 
 describe("paging, stats and the Slack directory over HTTP", () => {
-  test("a conversation pages upwards through before/nextBefore", async () => {
+  test("memory endpoints say which channels and threads the DB holds, and flip after a clear", async () => {
     const { dash, messages } = build();
-    for (let i = 1; i <= 5; i++) messages.append({ channelId: "C1", slackUserId: "U1", role: "user", content: `m${i}` }, i);
-    const first = (await (await dash.handle(api(`/api/conversation?channel=C1&limit=3`))).json()) as {
-      messages: { content: string }[];
-      nextBefore?: number;
-      total: number;
-    };
-    expect(first.messages.map((m) => m.content)).toEqual(["m3", "m4", "m5"]);
-    expect(first.total).toBe(5);
-    const older = (await (await dash.handle(api(`/api/conversation?channel=C1&limit=3&before=${first.nextBefore}`))).json()) as {
-      messages: { content: string }[];
-      nextBefore?: number;
-    };
-    expect(older.messages.map((m) => m.content)).toEqual(["m1", "m2"]);
-    expect(older.nextBefore).toBeUndefined();
+    messages.append({ channelId: "C1", slackUserId: "U1", role: "user", content: "a" }, 1);
+    messages.append({ channelId: "C1", slackUserId: "U1", role: "user", content: "b", threadTs: "7.1" }, 2);
+    messages.append({ channelId: "C2", slackUserId: "U1", role: "user", content: "c" }, 3);
+    const chans = (await (await dash.handle(api(`/api/memory/channels`))).json()) as { channelId: string; count: number }[];
+    expect(chans.map((c) => [c.channelId, c.count])).toEqual([["C2", 1], ["C1", 2]]);
+    const threads = (await (await dash.handle(api(`/api/memory/threads?channel=C1`))).json()) as { threadTs: string; count: number }[];
+    expect(threads).toMatchObject([{ threadTs: "7.1", count: 1 }]);
+    expect(await (await dash.handle(api(`/api/memory/threads`))).json()).toEqual([]);
+    await dash.handle(postJson(`/api/conversation/clear`, { channel: "C1" }));
+    const after = (await (await dash.handle(api(`/api/memory/channels`))).json()) as { channelId: string }[];
+    expect(after.map((c) => c.channelId)).toEqual(["C2"]);
   });
 
-  test("the conversation list pages with a cursor", async () => {
-    const { dash, messages } = build();
-    for (let i = 1; i <= 3; i++) messages.append({ channelId: `C${i}`, slackUserId: "U1", role: "user", content: "x" }, i);
-    const page = (await (await dash.handle(api(`/api/conversations?limit=2`))).json()) as {
-      channels: { channelId: string }[];
-      nextCursor?: string;
-    };
-    expect(page.channels.map((c) => c.channelId)).toEqual(["C3", "C2"]);
-    const next = (await (await dash.handle(api(`/api/conversations?limit=2&cursor=${page.nextCursor}`))).json()) as {
-      channels: { channelId: string }[];
-      nextCursor?: string;
-    };
-    expect(next.channels.map((c) => c.channelId)).toEqual(["C1"]);
-    expect(next.nextCursor).toBeUndefined();
+  test("the retired conversation routes are gone", async () => {
+    const { dash } = build();
+    expect((await dash.handle(api(`/api/conversations`))).status).toBe(404);
+    expect((await dash.handle(api(`/api/conversation?channel=C1`))).status).toBe(404);
   });
 
   test("stats say they are not recording without a store, and chart the window with one", async () => {

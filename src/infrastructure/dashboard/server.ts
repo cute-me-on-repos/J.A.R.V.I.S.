@@ -24,6 +24,7 @@ import type { KitViewRepo } from "../db/kitViewRepo.ts";
 import type { SettingsRepo } from "../db/settingsRepo.ts";
 import type { RoleRepo } from "../db/roleRepo.ts";
 import type { StatsRepo } from "../db/statsRepo.ts";
+import type { ThreadSessionRepo } from "../db/threadSessionRepo.ts";
 import { createSlackDirectory } from "../../application/slackDirectory.ts";
 import { createNameResolver } from "../../application/nameResolver.ts";
 import type { SlackProxy } from "../../application/slackProxy.ts";
@@ -75,6 +76,8 @@ export type DashboardDeps = {
   /** What each run of the model consumed, for the spend page. */
   usage?: UsageRepo;
   /** Activity aggregates for the overview charts. */
+  /** Thread sessions, dropped with the turns they would replay when memory is cleared from the console. */
+  threadSessions?: ThreadSessionRepo;
   stats?: StatsRepo;
   /** The host's timezone offset in minutes (`Date#getTimezoneOffset`); defaults to the process's. */
   timezoneOffset?: () => number;
@@ -236,6 +239,7 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
     usage: deps.usage,
     kitViews: deps.kitViews,
     stats: deps.stats,
+    threadSessions: deps.threadSessions,
     timezoneOffset: deps.timezoneOffset ?? (() => new Date(deps.clock()).getTimezoneOffset()),
     // One copy of the workspace directory per server, refreshed every ten
     // minutes, so the Users page search is not a `users.list` sweep per key.
@@ -298,10 +302,10 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           return Response.json(await app.commandLog());
         case "/api/usage":
           return Response.json(await app.usage(q("hours")));
-        case "/api/conversations":
-          return Response.json(await app.conversations(q("cursor"), q("limit")));
-        case "/api/conversation":
-          return Response.json(await app.conversation(q("channel") ?? "", q("before"), q("limit")));
+        case "/api/memory/channels":
+          return Response.json(app.memoryChannels());
+        case "/api/memory/threads":
+          return Response.json(app.memoryThreads(q("channel")));
         case "/api/stats":
           return Response.json(await app.stats(q("days")));
         case "/api/slack/members": {
@@ -394,8 +398,7 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           app.resetPrompt();
           return ok();
         case "/api/conversation/clear":
-          app.clearConversation(body.channel);
-          return ok();
+          return reply(app.clearConversation(body.channel, body.threadTs));
         case "/api/commands/toggle":
           return reply(app.toggleCommand(body.name, body.enabled));
         case "/api/command-log/clear":
