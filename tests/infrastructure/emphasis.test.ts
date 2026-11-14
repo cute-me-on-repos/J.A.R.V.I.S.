@@ -27,6 +27,11 @@ const SAMPLES = [
   "*~x~* done",
   "~*x*~ done",
   "*a ~b* c~ end",
+  // the char before a marker decides it, even when a delta ends right there
+  "\\*not bold*",
+  "2*3* = 6",
+  "foo*bar*, baz",
+  "x~y~ z",
 ];
 
 describe("createEmphasisNormalizer", () => {
@@ -38,6 +43,19 @@ describe("createEmphasisNormalizer", () => {
       }
     });
   }
+
+  test("matches toSlackMarkdown on a seeded random corpus at every small slice size", () => {
+    let seed = 42;
+    const rand = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % n;
+    };
+    const alphabet = ["*", "~", "a", "1", ":", ")", ",", ".", " ", "\\", "_", "\n"];
+    for (let i = 0; i < 2000; i += 1) {
+      const text = Array.from({ length: 4 + rand(14) }, () => alphabet[rand(alphabet.length)]).join("");
+      for (let size = 1; size <= 3; size += 1) expect(feed(text, size).out).toBe(toSlackMarkdown(text));
+    }
+  });
 
   test("a pair split across deltas becomes bold", () => {
     const n = createEmphasisNormalizer();

@@ -41,7 +41,10 @@ const closedAt = (s: string, i: number): number => {
  * unclosed backtick or opener-without-closer; a run that closes exactly at the
  * end is held too, since the next character may still extend it (`**`, a letter).
  */
-const safeLength = (line: string): number => {
+const safeLength = (rest: string, ctx: string): number => {
+  // Judged with the stand-in for the char already sent, so a marker at the
+  // start of `rest` is read the way the whole line reads it.
+  const line = ctx + rest;
   // Whole code spans and Slack <links> are opaque; whatever backtick or `<` is
   // left is unclosed, and held.
   const masked = line
@@ -53,7 +56,8 @@ const safeLength = (line: string): number => {
   // (`*Status:*,`), so a marker inside a closed run of its own kind is skipped.
   // A cut inside a closed run would split it, so the cut moves to its start.
   const closed: { marker: string; start: number; end: number }[] = [];
-  const cutAt = (i: number): number => Math.min(i, ...closed.filter((r) => r.start < i && i < r.end).map((r) => r.start));
+  const cutAt = (i: number): number =>
+    Math.max(0, Math.min(i, ...closed.filter((r) => r.start < i && i < r.end).map((r) => r.start)) - ctx.length);
   OPENER.lastIndex = 0;
   for (const m of masked.matchAll(OPENER)) {
     if (m.index >= limit) break;
@@ -69,6 +73,21 @@ export const createEmphasisNormalizer = (): EmphasisNormalizer => {
   let buf = "";
   let inFence = false;
   let atLineStart = true;
+  // The last raw char sent on the current line: `BOLD`/`STRIKE` judge a marker
+  // by the char before it, and that char may have gone out in an earlier chunk.
+  let prev = "";
+
+  /**
+   * Convert the rest of a line with the char before it in mind. A char those
+   * lookbehinds reject (`\\`, a letter, a digit, a marker) is stood in for by a
+   * plain letter, which can never pair with anything itself.
+   */
+  const context = (): string => (/[\\\p{L}\p{N}*~]/u.test(prev) ? "a" : "");
+  const convert = (chunk: string): string => {
+    const ctx = context();
+    prev = chunk.endsWith("\n") ? "" : (chunk.slice(-1) || prev);
+    return toSlackMarkdown(ctx + chunk).slice(ctx.length);
+  };
 
   const run = (final: boolean): string => {
     let out = "";
@@ -88,7 +107,10 @@ export const createEmphasisNormalizer = (): EmphasisNormalizer => {
         buf = buf.slice(nl + 1);
         const fenceLine = atLineStart && line.startsWith("```");
         if (fenceLine) inFence = !inFence;
-        emit(inFence || fenceLine ? line : toSlackMarkdown(line));
+        if (inFence || fenceLine) {
+          prev = "";
+          emit(line);
+        } else emit(convert(line));
         continue;
       }
       if (inFence) {
@@ -96,8 +118,8 @@ export const createEmphasisNormalizer = (): EmphasisNormalizer => {
         buf = "";
         break;
       }
-      const cut = final ? buf.length : safeLength(buf);
-      emit(toSlackMarkdown(buf.slice(0, cut)));
+      const cut = final ? buf.length : safeLength(buf, context());
+      emit(convert(buf.slice(0, cut)));
       buf = buf.slice(cut);
       break;
     }
@@ -114,6 +136,7 @@ export const createEmphasisNormalizer = (): EmphasisNormalizer => {
       buf = "";
       inFence = false;
       atLineStart = true;
+      prev = "";
       return text;
     },
   };
