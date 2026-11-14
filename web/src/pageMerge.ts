@@ -34,3 +34,18 @@ export const nearBottom = (scrollTop: number, clientHeight: number, scrollHeight
 
 /** True when a scroll position has reached the top, where older messages are fetched. */
 export const nearTop = (scrollTop: number, slack = 80): boolean => scrollTop <= slack;
+
+/** Rows (hidden messages, DB turns) by id, in time order: `add` joins `current`, an id in both keeps the newer copy. */
+export const mergeRows = <R extends { id: string; at: number }>(current: readonly R[], add: readonly R[]): R[] => {
+  const byId = new Map(current.map((r) => [r.id, r]));
+  for (const r of add) byId.set(r.id, r);
+  return [...byId.values()].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+};
+
+/**
+ * The newest window read again: rows from `head` on are replaced by `fresh` (a
+ * row that vanished is dropped), older windows already loaded stay. `head`
+ * undefined means the window was everything, so everything is replaced.
+ */
+export const replaceFrom = <R extends { id: string; at: number }>(current: readonly R[], fresh: readonly R[], head: number | undefined): R[] =>
+  mergeRows(head === undefined ? [] : current.filter((r) => r.at < head), fresh);

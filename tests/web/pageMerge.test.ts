@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadedBelow, nearBottom, nearTop, prependOlder, replaceNewest } from "../../web/src/pageMerge.ts";
+import { loadedBelow, mergeRows, nearBottom, nearTop, prependOlder, replaceFrom, replaceNewest } from "../../web/src/pageMerge.ts";
 
 const m = (ts: string, text = ts) => ({ ts, text });
 const tss = (xs: readonly { ts: string }[]) => xs.map((x) => x.ts);
@@ -39,5 +39,15 @@ describe("page merging", () => {
     expect(nearTop(0)).toBe(true);
     expect(nearTop(80)).toBe(true);
     expect(nearTop(400)).toBe(false);
+  });
+
+  test("rows from older windows join by id in time order; the newest window read again replaces only its own range", () => {
+    const r = (id: string, at: number, text = id) => ({ id, at, text });
+    expect(mergeRows([r("b", 20), r("d", 40)], [r("a", 10), r("c", 30), r("b", 20, "new")]).map((x) => x.id)).toEqual(["a", "b", "c", "d"]);
+    expect(mergeRows([r("b", 20)], [r("b", 20, "new")])[0]!.text).toBe("new");
+    const cur = [r("a", 10), r("b", 20), r("c", 30)];
+    // c vanished, d is new; a and b are older windows and stay
+    expect(replaceFrom(cur, [r("b", 20, "edited"), r("d", 40)], 20).map((x) => [x.id, x.text])).toEqual([["a", "a"], ["b", "edited"], ["d", "d"]]);
+    expect(replaceFrom(cur, [r("z", 5)], undefined).map((x) => x.id)).toEqual(["z"]);
   });
 });

@@ -5,8 +5,9 @@
  *
  * A person's turn is stored with the ts of the Slack message it came from, so it
  * is found by ts. The bot's own replies are not stored with one, so a reply is
- * found by its words (letters and digits only, the opening of it: Slack's
- * mrkdwn conversion, the footer and emoji must not matter). A reply edited in
+ * found by its words (letters and digits only, the opening of it, link targets
+ * dropped on both sides: Slack's mrkdwn conversion, the footer and emoji must
+ * not matter; the server computes the stored side before redacting). A reply edited in
  * Slack after the fact reads as a different message, and a turn stored under a
  * synthetic ts (a continued turn, say) never had a Slack message: both show as
  * deleted. That is the honest limit of a DB that does not keep the reply's ts.
@@ -21,16 +22,29 @@ export type DbTurn = {
   at: number;
   ts: string;
   threadTs: string;
+  /** A reply's opening as letters, worked out by the server from the raw (unredacted) text; "" for a person's turn. */
+  opening: string;
 };
 
 type OnSlack = { ts: string; text: string; own: boolean };
 
 const tsMs = (ts: string): number => Number(ts) * 1000 || 0;
 
-/** How much of a reply's opening has to be found in a Slack message. */
-const OPENING = 32;
+/**
+ * A reply is stored when its turn ENDS but posted when it STARTS streaming, so
+ * its Slack message can sit just past the oldest page loaded: a reply this close
+ * to the edge is not judged.
+ */
+const EDGE_MARGIN_MS = 10 * 60_000;
 
-const letters = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+/** Letters and digits with link targets dropped - the same steps as the server's `openingOf`, whole rather than cut. */
+const letters = (s: string): string =>
+  s
+    .replace(/\[([^\]]*)\]\([^)\s]*\)/g, "$1")
+    .replace(/<[^<>|\s]+\|([^<>]*)>/g, "$1")
+    .replace(/<(?:https?:|mailto:)[^<>\s]*>/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
 
 /**
  * The DB turns Slack does not have. `since` (ms) is the oldest message on screen
@@ -41,9 +55,9 @@ export const deletedOnSlack = (slack: readonly OnSlack[], turns: readonly DbTurn
   const tsSet = new Set(slack.map((m) => m.ts));
   const ownText = slack.filter((m) => m.own).map((m) => letters(m.text));
   return turns.filter((t) => {
-    if (since !== undefined && (t.ts ? tsMs(t.ts) : t.at) < since) return false;
+    if (since !== undefined && (t.ts ? tsMs(t.ts) : t.at) < since + (t.role === "assistant" ? EDGE_MARGIN_MS : 0)) return false;
     if (t.role === "user") return !!t.ts && !tsSet.has(t.ts);
-    const opening = letters(t.text).slice(0, OPENING);
+    const opening = t.opening;
     return opening.length > 0 && !ownText.some((text) => text.includes(opening));
   });
 };

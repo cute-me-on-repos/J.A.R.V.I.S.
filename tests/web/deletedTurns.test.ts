@@ -3,7 +3,13 @@ import { deletedOnSlack, turnTime, type DbTurn } from "../../web/src/deletedTurn
 import { KIND_LEGEND, slackKind } from "../../web/src/consoleKinds.ts";
 import { mergeTimeline } from "../../web/src/internalTimeline.ts";
 
-const turn = (over: Partial<DbTurn> & { id: string }): DbTurn => ({ role: "user", userId: "U1", text: "x", at: 1_000_000, ts: "", threadTs: "", ...over });
+import { openingOf } from "../../src/domain/internalMessages.ts";
+
+/** A DB turn as the server sends it: a reply carries the opening worked out from its raw text. */
+const turn = (over: Partial<DbTurn> & { id: string }): DbTurn => {
+  const t: DbTurn = { role: "user", userId: "U1", text: "x", at: 1_000_000, ts: "", threadTs: "", opening: "", ...over };
+  return t.role === "assistant" && !over.opening ? { ...t, opening: openingOf(t.text) } : t;
+};
 const slack = (ts: string, text: string, own = false) => ({ ts, text, own });
 
 describe("deleted on Slack", () => {
@@ -29,6 +35,22 @@ describe("deleted on Slack", () => {
     expect(deletedOnSlack([slack("5.0", "something else", true)], [reply]).map((t) => t.id)).toEqual(["r"]);
     expect(deletedOnSlack([slack("5.0", text, false)], [reply]).map((t) => t.id)).toEqual(["r"]);
     expect(deletedOnSlack([slack("5.0", text, true)], [reply])).toEqual([]);
+  });
+
+  test("a reply that opens with a markdown link, or holds a secret, still matches what Slack shows", () => {
+    const link = turn({ id: "l", role: "assistant", text: "[the run](https://x.dev/run/1) finished green, nothing left to do here" });
+    const onSlack = [slack("5.0", "<https://x.dev/run/1|the run> finished green, nothing left to do here\n_Jarvis_", true)];
+    expect(deletedOnSlack(onSlack, [link])).toEqual([]);
+    // the server redacts `text` for display but fingerprints the raw text
+    const secret = { ...turn({ id: "s", role: "assistant", text: "xoxb-1234567890-abcdefghij is the token you asked for, keep it safe please" }), text: "[redacted] is the token you asked for" };
+    expect(deletedOnSlack([slack("6.0", "xoxb-1234567890-abcdefghij is the token you asked for, keep it safe please", true)], [secret])).toEqual([]);
+  });
+
+  test("a reply stored just after the page edge is not judged: its Slack message may be on the page before", () => {
+    const since = 1_000_000;
+    const edge = turn({ id: "e", role: "assistant", text: "a long answer that took minutes to stream", at: since + 60_000 });
+    const later = turn({ id: "n", role: "assistant", text: "another answer well inside the page", at: since + 20 * 60_000 });
+    expect(deletedOnSlack([], [edge, later], since).map((t) => t.id)).toEqual(["n"]);
   });
 
   test("a reply with no words to compare is not called deleted", () => {

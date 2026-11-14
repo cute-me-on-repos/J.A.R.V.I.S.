@@ -62,8 +62,6 @@ const timeRange = (r?: RangeIn): { since?: number; before?: number } => {
   const before = msOf(r?.before);
   return { ...(since === undefined ? {} : { since }), ...(before === undefined ? {} : { before }) };
 };
-const inRange = (at: number, r: { since?: number; before?: number }): boolean =>
-  (r.since === undefined || at >= r.since) && (r.before === undefined || at < r.before);
 const pageLimit = (v: unknown, max: number): number => Math.min(max, Math.max(1, Math.floor(msOf(v) ?? max)));
 
 /** A refused use case: what to tell the caller, and the HTTP-ish status it maps to. */
@@ -140,7 +138,7 @@ export type DashboardPorts = {
   };
   /** Notes one thread left for another (`brief`), see `ThreadBriefRepo`. */
   readonly briefs?: {
-    readonly toChannel: (channelId: string, limit: number, threadTs?: string) => readonly StoredBrief[];
+    readonly toChannel: (channelId: string, limit: number, threadTs?: string, range?: { since?: number; before?: number }) => readonly StoredBrief[];
   };
   readonly learnings: {
     readonly list: () => readonly unknown[];
@@ -712,7 +710,7 @@ export const createDashboardService = (p: DashboardPorts) => {
       const m = turnToInternal(t);
       return m ? [m] : [];
     });
-    const briefs = (p.briefs?.toChannel(channel, limit, thread) ?? []).map(briefToInternal).filter((b) => inRange(b.at, range));
+    const briefs = (p.briefs?.toChannel(channel, limit, thread, range) ?? []).map(briefToInternal);
     return done({ items: sortInternal([...turns, ...briefs]).slice(-limit) });
   },
 

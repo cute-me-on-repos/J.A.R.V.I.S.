@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { briefToInternal, classifyTurn, MAX_INTERNAL_TEXT, sortInternal, STEER_PREFIXES, turnToDbTurn, turnToInternal } from "../../src/domain/internalMessages.ts";
+import { briefToInternal, classifyTurn, MAX_INTERNAL_TEXT, sortInternal, STEER_PREFIXES, openingOf, turnToDbTurn, turnToInternal } from "../../src/domain/internalMessages.ts";
 import { cleanInboundText } from "../../src/domain/conversation.ts";
 import { steerPrompt, tellPrompt } from "../../src/domain/tellPrompt.ts";
 import { nudgeText } from "../../src/domain/stalePromise.ts";
@@ -102,6 +102,7 @@ describe("turnToDbTurn: the DB copy of a message", () => {
       at: 5,
       ts: "1.5",
       threadTs: "1.5",
+      opening: "",
     });
     expect(turnToDbTurn(stored({ role: "assistant" }))).toMatchObject({ role: "assistant", ts: "", threadTs: "" });
   });
@@ -111,6 +112,14 @@ describe("turnToDbTurn: the DB copy of a message", () => {
     expect(turnToDbTurn(stored({ role: "assistant", content: "NO_REPLY" }))).toBeUndefined();
     // a person typing a look-alike in an assistant row is still the bot's text
     expect(turnToDbTurn(stored({ role: "assistant", content: tellPrompt("U9", "x") }))).toBeDefined();
+  });
+
+  test("a reply's opening is letters only, link targets dropped, taken before redaction", () => {
+    expect(openingOf("[the run](https://x.dev/r) is **done**, see <https://y.dev> now")).toBe("therunisdoneseenow");
+    expect(openingOf("<https://x.dev/r|the run> is *done*, see now")).toBe("therunisdoneseenow");
+    expect(openingOf("a".repeat(100))).toHaveLength(32);
+    expect(turnToDbTurn(stored({ role: "assistant", content: "xoxb-1234567890-abcdefghij here" }))).toMatchObject({ text: "[redacted] here", opening: "xoxb1234567890abcdefghijhere".slice(0, 32) });
+    expect(turnToDbTurn(stored({ content: "a person" }))!.opening).toBe("");
   });
 
   test("a long turn is clipped", () => {

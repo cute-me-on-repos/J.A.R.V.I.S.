@@ -21,6 +21,7 @@ import { deletedOnSlack, type DbTurn } from "../deletedTurns.ts";
 import { consolePath, parseConsolePath } from "../consoleNav.ts";
 import { KIND_LEGEND, slackKind } from "../consoleKinds.ts";
 import { loadedBelow, prependOlder, replaceNewest } from "../pageMerge.ts";
+import { useDbRows } from "../useDbRows.ts";
 
 type Mode = "all" | "own" | "mentions";
 type Editing = { ts: string; text: string } | null;
@@ -38,9 +39,6 @@ const errText = (e: unknown): string => (e instanceof Error ? e.message : String
 const historyUrl = (ch: string, before?: string) => `slack/history?channel=${enc(ch)}&limit=${PAGE}${before === undefined ? "" : `&cursor=${enc(before)}`}`;
 const threadUrl = (ch: string, root: string, before?: string) =>
   `slack/thread?channel=${enc(ch)}&ts=${enc(root)}&limit=${PAGE}${before === undefined ? "" : `&before=${enc(before)}`}`;
-/** The window of DB rows that matches the Slack messages on screen: from the oldest one, or everything once the beginning is loaded. */
-const windowQuery = (ch: string, thread: string | undefined, since: number | undefined) =>
-  `channel=${enc(ch)}${thread ? `&thread=${enc(thread)}` : ""}${since === undefined ? "" : `&since=${Math.floor(since)}`}`;
 
 const ago = (ms: number): string => {
   if (!ms) return "";
@@ -111,7 +109,11 @@ export function ConsolePage() {
   const [messages, setMessages] = useState<SlackMessage[]>([]);
   const [cursor, setCursor] = useState<string | undefined>();
   const [historyLoaded, setHistoryLoaded] = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
+  /** Which view an older-page request is running for (`channel/thread`), so the channel's and a thread's never block each other. */
+  const [olderFor, setOlderFor] = useState("");
+  /** Display only: a view is still arriving. Never disables a button, so a request that is dropped cannot lock the page. */
+  const [loadingChannel, setLoadingChannel] = useState(false);
+  const [loadingThread, setLoadingThread] = useState(false);
   const [filter, setFilter] = useState("");
   const [mode, setMode] = useState<Mode>("all");
   const [thread, setThread] = useState<OpenThread | null>(null);
@@ -121,15 +123,8 @@ export function ConsolePage() {
   const [memChannels, setMemChannels] = useState<MemoryChannel[]>([]);
   const [memThreads, setMemThreads] = useState<MemoryThread[]>([]);
   /** Messages the bot steered sessions with that never reached Slack (tell, brief, ...), from its DB. */
-  const [internal, setInternal] = useState<InternalMessage[]>([]);
   /** Turns the DB holds for this channel's own messages: the copy that shows what Slack deleted. */
-  const [dbTurns, setDbTurns] = useState<DbTurn[]>([]);
-  const [hiddenLoaded, setHiddenLoaded] = useState(false);
   /** The open thread's own hidden messages and DB copy: asked for by thread, so an old thread is not cut by the channel's window. */
-  const [threadInternal, setThreadInternal] = useState<InternalMessage[]>([]);
-  const [threadTurns, setThreadTurns] = useState<DbTurn[]>([]);
-  const [threadHiddenLoaded, setThreadHiddenLoaded] = useState(false);
-  const [internalError, setInternalError] = useState("");
   const [showInternal, setShowInternal] = useState(true);
   /** Channels/threads whose stored memory was deleted from this page, to tell "cleared" from "never stored". */
   const [cleared, setCleared] = useState<ReadonlySet<string>>(new Set());
@@ -234,17 +229,12 @@ export function ConsolePage() {
     setMessages([]);
     setCursor(undefined);
     setHistoryLoaded(false);
-    setLoadingOlder(false);
     setMemThreads([]);
-    setInternal([]);
-    setDbTurns([]);
-    setHiddenLoaded(false);
-    setInternalError("");
     setEditing(null);
     setError("");
+    setLoadingChannel(!!channel);
     if (!channel) return;
     let stale = false;
-    setBusy(true);
     get<HistoryPage>(historyUrl(channel))
       .then((page) => {
         if (stale) return;
@@ -256,7 +246,7 @@ export function ConsolePage() {
         if (!stale) setError(errText(e));
       })
       .finally(() => {
-        if (!stale) setBusy(false);
+        if (!stale) setLoadingChannel(false);
       });
     void loadBadges(channel, () => stale);
     return () => {
@@ -266,30 +256,18 @@ export function ConsolePage() {
 
   /** The oldest Slack message on screen while older ones remain: the DB rows below it belong to pages not loaded yet. */
   const since = oldestOnScreen(messages, !!cursor);
-  // The DB rows next to the Slack page: hidden messages and the DB copy, for the same window of time.
-  useEffect(() => {
-    if (!channel || !historyLoaded) return;
-    let stale = false;
-    const q = windowQuery(channel, undefined, since);
-    void Promise.allSettled([get<{ items: InternalMessage[] }>(`memory/internal?${q}`), get<{ items: DbTurn[] }>(`memory/turns?${q}`)]).then(([hidden, turns]) => {
-      if (stale) return;
-      setInternal(hidden.status === "fulfilled" ? hidden.value.items : []);
-      setDbTurns(turns.status === "fulfilled" ? turns.value.items : []);
-      const failed = [hidden, turns].find((r) => r.status === "rejected");
-      setInternalError(failed?.status === "rejected" ? errText(failed.reason) : "");
-      setHiddenLoaded(true);
-    });
-    return () => {
-      stale = true;
-    };
-  }, [channel, historyLoaded, since, dbTick]);
+  // The DB rows next to the Slack page (hidden messages, the DB copy), paged with it.
+  const db = useDbRows(channel, "", historyLoaded, since, dbTick);
+  const internal = db.internal;
+  const dbTurns = db.turns;
 
   /** A page of the channel's older history (the Slack cursor), prepended with the reader's place kept by the pane. */
   const loadOlder = async () => {
     const ch = channel;
     const before = cursor;
-    if (!before || loadingOlder) return;
-    setLoadingOlder(true);
+    const mine = `${ch}/`;
+    if (!before || olderFor === mine) return;
+    setOlderFor(mine);
     try {
       const page = await get<HistoryPage>(historyUrl(ch, before));
       if (live.current.channel !== ch) return;
@@ -298,20 +276,17 @@ export function ConsolePage() {
     } catch (e) {
       if (live.current.channel === ch) setError(errText(e));
     } finally {
-      setLoadingOlder(false);
+      setOlderFor((cur) => (cur === mine ? "" : cur));
     }
   };
 
   // A thread (from the address): its newest page, full width. A request for a thread already left is dropped.
   useEffect(() => {
     setThread(null);
-    setThreadInternal([]);
-    setThreadTurns([]);
-    setThreadHiddenLoaded(false);
     setThreadComposer("");
+    setLoadingThread(!!channel && !!threadRoot);
     if (!channel || !threadRoot) return;
     let stale = false;
-    setBusy(true);
     get<ThreadPage>(threadUrl(channel, threadRoot))
       .then((page) => {
         if (!stale) setThread({ root: threadRoot, messages: page.messages, hasMore: page.hasMore });
@@ -320,7 +295,7 @@ export function ConsolePage() {
         if (!stale) setError(errText(e));
       })
       .finally(() => {
-        if (!stale) setBusy(false);
+        if (!stale) setLoadingThread(false);
       });
     return () => {
       stale = true;
@@ -328,30 +303,18 @@ export function ConsolePage() {
   }, [channel, threadRoot]);
 
   const threadSince = thread ? oldestOnScreen(thread.messages, thread.hasMore) : undefined;
-  const threadLoaded = !!thread;
-  useEffect(() => {
-    if (!channel || !threadRoot || !threadLoaded) return;
-    let stale = false;
-    const q = windowQuery(channel, threadRoot, threadSince);
-    void Promise.allSettled([get<{ items: InternalMessage[] }>(`memory/internal?${q}`), get<{ items: DbTurn[] }>(`memory/turns?${q}`)]).then(([hidden, turns]) => {
-      if (stale) return;
-      setThreadInternal(hidden.status === "fulfilled" ? hidden.value.items : []);
-      setThreadTurns(turns.status === "fulfilled" ? turns.value.items : []);
-      const failed = [hidden, turns].find((r) => r.status === "rejected");
-      setInternalError(failed?.status === "rejected" ? errText(failed.reason) : "");
-      setThreadHiddenLoaded(true);
-    });
-    return () => {
-      stale = true;
-    };
-  }, [channel, threadRoot, threadLoaded, threadSince, dbTick]);
+  const threadDb = useDbRows(channel, threadRoot, !!thread, threadSince, dbTick);
+  const threadInternal = threadDb.internal;
+  const threadTurns = threadDb.turns;
+  const internalError = db.error || threadDb.error;
 
   const loadOlderReplies = async () => {
     const ch = channel;
     const root = threadRoot;
     const before = thread?.messages[0]?.ts;
-    if (!thread || !before || loadingOlder) return;
-    setLoadingOlder(true);
+    const mine = `${ch}/${root}`;
+    if (!thread || !before || olderFor === mine) return;
+    setOlderFor(mine);
     try {
       const page = await get<ThreadPage>(threadUrl(ch, root, before));
       if (live.current.channel !== ch || live.current.thread !== root) return;
@@ -359,7 +322,7 @@ export function ConsolePage() {
     } catch (e) {
       if (live.current.channel === ch && live.current.thread === root) setError(errText(e));
     } finally {
-      setLoadingOlder(false);
+      setOlderFor((cur) => (cur === mine ? "" : cur));
     }
   };
 
@@ -489,7 +452,7 @@ export function ConsolePage() {
   const threadDeleted = useMemo(() => (thread ? deletedOnSlack(thread.messages, threadTurns, threadSince) : []), [thread, threadTurns, threadSince]);
 
   // The page is whole when its Slack messages and DB rows are all in; names are then asked for once.
-  const ready = historyLoaded && hiddenLoaded && (!threadRoot || (!!thread && threadHiddenLoaded));
+  const ready = historyLoaded && db.loaded && (!threadRoot || (!!thread && threadDb.loaded));
   const slackNames = useSlackNames(
     [
       ...[...messages, ...(thread?.messages ?? [])].map((m) => m.text),
@@ -654,10 +617,10 @@ export function ConsolePage() {
               resetKey={`${channel}/${threadRoot}`}
               bottomSignal={bottomSignal}
               hasOlder={!!thread?.hasMore}
-              loadingOlder={loadingOlder}
+              loadingOlder={olderFor === `${channel}/${threadRoot}`}
               onLoadOlder={loadOlderReplies}
             >
-              {!thread && <p className="muted" style={{ padding: 16 }}>{busy ? "Loading thread..." : "Thread not loaded."}</p>}
+              {!thread && <p className="muted" style={{ padding: 16 }}>{loadingThread ? "Loading thread..." : "Thread not loaded."}</p>}
               {thread && threadTimeline.length === 0 && <p className="muted" style={{ padding: 16 }}>No messages.</p>}
               {threadTimeline.map((e) =>
                 e.type === "slack" ? Row(e.message, true) : e.type === "internal" ? <InternalRow key={e.message.id} m={e.message} names={slackNames} /> : <DeletedRow key={e.message.id} m={e.message} names={slackNames} />,
@@ -699,10 +662,10 @@ export function ConsolePage() {
               resetKey={channel}
               bottomSignal={bottomSignal}
               hasOlder={!!cursor}
-              loadingOlder={loadingOlder}
+              loadingOlder={olderFor === `${channel}/`}
               onLoadOlder={loadOlder}
             >
-              {channelTimeline.length === 0 && <p className="muted" style={{ padding: 16 }}>{busy ? "Loading..." : "No messages."}</p>}
+              {channelTimeline.length === 0 && <p className="muted" style={{ padding: 16 }}>{loadingChannel ? "Loading..." : "No messages."}</p>}
               {channelTimeline.map((e) =>
                 e.type === "slack" ? (
                   Row(e.message)

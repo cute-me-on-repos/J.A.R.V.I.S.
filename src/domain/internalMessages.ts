@@ -155,7 +155,29 @@ export type DbTurn = {
   readonly at: number;
   readonly ts: string;
   readonly threadTs: string;
+  /**
+   * The letters of the turn's opening, to find the bot's reply on a Slack page
+   * (replies carry no ts). Taken from the raw text, before redaction, and with
+   * link targets dropped the way Slack's mrkdwn conversion reorders them.
+   */
+  readonly opening: string;
 };
+
+/** How many letters of a reply's opening identify it. */
+export const OPENING_LETTERS = 32;
+
+/**
+ * The letters and digits of a text's opening with link targets dropped: `[label](url)` (what the
+ * bot stores) and `<url|label>` / `<url>` (what Slack shows) both leave just `label`, so the two compare equal.
+ */
+export const openingOf = (text: string): string =>
+  text
+    .replace(/\[([^\]]*)\]\([^)\s]*\)/g, "$1")
+    .replace(/<[^<>|\s]+\|([^<>]*)>/g, "$1")
+    .replace(/<(?:https?:|mailto:)[^<>\s]*>/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .slice(0, OPENING_LETTERS);
 
 /**
  * A stored turn as the DB copy of a message; undefined when it was never a
@@ -174,5 +196,6 @@ export const turnToDbTurn = (m: StoredFullTurn): DbTurn | undefined => {
     at: m.createdAt,
     ts: m.slackTs ?? "",
     threadTs: m.threadTs ?? "",
+    opening: m.role === "assistant" ? openingOf(m.content) : "",
   };
 };

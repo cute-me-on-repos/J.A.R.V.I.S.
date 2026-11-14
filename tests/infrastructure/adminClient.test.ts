@@ -261,4 +261,20 @@ describe("the console's reads", () => {
     const page = await admin.history("C1", 50);
     expect(page.messages.map((m) => [m.ts, m.own, m.bot ?? false])).toEqual([["1.0", true, true], ["2.0", false, true], ["3.0", false, false]]);
   });
+
+  test("replies follows the cursor so a long thread's newest replies are in the result", async () => {
+    const asked: Record<string, unknown>[] = [];
+    const admin = readClient({
+      conversations: {
+        replies: async (a: Record<string, unknown>) => {
+          asked.push(a);
+          return a.cursor
+            ? { messages: [{ ts: "3.0", user: "U5", text: "newest" }] }
+            : { messages: [{ ts: "1.0", user: "U5", text: "root" }, { ts: "2.0", user: "U5", text: "mid" }], response_metadata: { next_cursor: "p2" } };
+        },
+      },
+    });
+    expect((await admin.replies("C1", "1.0")).map((m) => m.ts)).toEqual(["1.0", "2.0", "3.0"]);
+    expect(asked.map((a) => a.cursor)).toEqual([undefined, "p2"]);
+  });
 });
