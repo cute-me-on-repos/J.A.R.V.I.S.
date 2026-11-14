@@ -27,6 +27,14 @@ export const LEARNING_ACTION_PREFIX = "jv:learning:";
 export const LEARNING_APPROVE_ACTION = `${LEARNING_ACTION_PREFIX}approve`;
 export const LEARNING_REJECT_ACTION = `${LEARNING_ACTION_PREFIX}reject`;
 
+/** The turn that proposed a learning: where it ran, and the session id it sent (empty when none). */
+export type LearningSource = {
+  readonly channel: string;
+  /** The thread the turn answers in: its thread, or the message that started it. Empty when unknown. */
+  readonly threadTs: string;
+  readonly runId: string;
+};
+
 /** A fact on one line, the way it is stored and shown. */
 export const oneLine = (fact: string): string => fact.trim().replace(/\s*\n+\s*/g, " ");
 
@@ -63,11 +71,12 @@ export const approvalCore = (content: string): string => `> ${escapeForSlack(one
 const whoAsked = (by: string): string => (by === AGENT_SOURCE || !by ? "one of my turns" : `<@${by}>`);
 
 /** The DM the owner decides on. The fact is escaped, so it cannot render a link or a mention. */
-export const approvalText = (id: number, content: string, by: string): string =>
+export const approvalText = (id: number, content: string, by: string, sourceLink?: string): string =>
   [
     `🧠 ${whoAsked(by)} wants me to remember this (learning #${id}). It is NOT part of my memory until you approve it:`,
     approvalCore(content),
     "Approve adds it to what I carry into every reply, in every channel. Reject discards it.",
+    ...(sourceLink ? [`Proposed in <${sourceLink}|this thread>.`] : []),
   ].join("\n");
 
 export const settledText = (kind: "approved" | "rejected", id: number, content: string, by: string): string =>

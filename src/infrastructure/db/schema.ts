@@ -110,6 +110,43 @@ export const migrate = (db: Database): void => {
   migrateLoopOrigin(db);
   migrateRoles37(db);
   migrateJourneys(db);
+  migrateLearningSource(db);
+  migrateLearningNoticeFingerprint(db);
+};
+
+/**
+ * Migration v40: the fingerprint of a learning's notice as last rendered.
+ *
+ * `notice_fingerprint` is `domain/noticeFingerprint.ts` over the blocks the bot
+ * last posted or rewrote, so a press is only honoured on that exact message.
+ * Empty for rows whose notice predates this (or was settled without buttons).
+ */
+const migrateLearningNoticeFingerprint = (db: Database): void => {
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(learnings)").all().map((c) => c.name);
+  if (!cols.includes("notice_fingerprint")) db.exec("ALTER TABLE learnings ADD COLUMN notice_fingerprint TEXT NOT NULL DEFAULT ''");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 40) db.exec("PRAGMA user_version = 40;");
+};
+
+/**
+ * Migration v39: a learning remembers the turn that proposed it.
+ *
+ * Channel + thread of the turn (and its session id when the turn sent one), so
+ * the owner's Approve / Reject notice can sit in that thread and a notice
+ * posted elsewhere can link back to it. Existing rows get empty strings: their
+ * source is unknown and they were decided long ago.
+ */
+const migrateLearningSource = (db: Database): void => {
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(learnings)").all().map((c) => c.name);
+  if (!cols.includes("source_channel")) db.exec("ALTER TABLE learnings ADD COLUMN source_channel TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes("source_thread_ts")) db.exec("ALTER TABLE learnings ADD COLUMN source_thread_ts TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes("source_run_id")) db.exec("ALTER TABLE learnings ADD COLUMN source_run_id TEXT NOT NULL DEFAULT ''");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 39) db.exec("PRAGMA user_version = 39;");
 };
 
 /**

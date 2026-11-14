@@ -7,6 +7,7 @@ import { WebClient } from "@slack/web-api";
 import { splitForBlocks, toMrkdwn } from "../../domain/slackFormat.ts";
 import { toBlockMessage } from "../../domain/blockKit.ts";
 import { type MessageBlock, visibleText } from "../../domain/slackMessageText.ts";
+import { noticeFingerprint } from "../../domain/noticeFingerprint.ts";
 import { footerBlock, footerLine, sectionChunks, signedSections, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
 import type { SlackMember } from "../../domain/slackMembers.ts";
 import { type FooterUsage, usageFooter } from "../../domain/usageFooter.ts";
@@ -73,11 +74,28 @@ const mapPool = async <T, R>(items: T[], n: number, fn: (item: T) => Promise<R>)
 
 export const createSlackAdmin = (client: WebClient, clock: () => number = Date.now): SlackAdminPort => {
   const nameCache = new Map<string, string>();
-  /** The grey signature line, stamped now: every post and edit carries one. */
-  const footer = (by?: string, usage?: FooterUsage): string =>
-    footerLine(by ?? SIGNATURES.jarvis, clock(), usage ? usageFooter(usage) : undefined);
+  /** The grey signature line every post carries. Stamped "updated" only for an edit. */
+  const footer = (by?: string, usage?: FooterUsage, edited = false): string =>
+    footerLine(by ?? SIGNATURES.jarvis, edited ? clock() : undefined, usage ? usageFooter(usage) : undefined);
   let botUserId: string | undefined;
   let workspace: string | undefined;
+
+  const settle = async (channel: string, ts: string, text: string, by?: string): Promise<void> => {
+    // Drop the buttons so a decided request cannot be clicked again.
+    await client.chat
+      .update({ channel, ts, ...signedText(text, footer(by, undefined, true)) })
+      // Refused: the text as unsigned sections (still no buttons), and
+      // failing that a text-only edit, so at least the words change.
+      .catch(() =>
+        client.chat.update({
+          channel,
+          ts,
+          text: text || " ",
+          blocks: sectionChunks(text).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } })),
+        }),
+      )
+      .catch(() => client.chat.update({ channel, ts, text }));
+  };
 
   const getBotUserId = async (): Promise<string> => {
     if (botUserId) return botUserId;
@@ -233,7 +251,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       // A refused markdown block is retried as sections; a refused rewrite
       // (a stopped stream's block_mismatch, say) still edits the words,
       // text-only, as before.
-      const line = footer(by);
+      const line = footer(by, undefined, true);
       await client.chat
         .update({ channel, ts, ...signedText(text, line) })
         .catch(() => client.chat.update({ channel, ts, ...signedSections(text, line) }))
@@ -320,48 +338,46 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       const open = (await client.conversations.open({ users: userId })) as { channel?: { id?: string } };
       const channel = open.channel?.id;
       if (!channel) return undefined;
-      const posted = (await client.chat.postMessage({
-        channel,
-        text,
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: toMrkdwn(text) } },
-          {
-            type: "actions",
-            elements: actions.map((a) => ({
-              type: "button",
-              action_id: a.actionId,
-              text: { type: "plain_text", text: a.label },
-              value: a.value,
-              ...(a.style ? { style: a.style } : {}),
-            })),
-          },
-          footerBlock(footer(by)),
-        ],
-      })) as { ts?: string };
-      return posted.ts ? { channel, ts: posted.ts } : undefined;
+      const blocks = [
+        { type: "section", text: { type: "mrkdwn", text: toMrkdwn(text) } },
+        {
+          type: "actions",
+          elements: actions.map((a) => ({
+            type: "button",
+            action_id: a.actionId,
+            text: { type: "plain_text", text: a.label },
+            value: a.value,
+            ...(a.style ? { style: a.style } : {}),
+          })),
+        },
+        footerBlock(footer(by)),
+      ];
+      const posted = (await client.chat.postMessage({ channel, text, blocks })) as { ts?: string };
+      return posted.ts ? { channel, ts: posted.ts, fingerprint: noticeFingerprint(blocks) } : undefined;
     },
 
     postInteractive: async (channel, text, actions, threadTs, by) => {
+      const blocks = [
+        { type: "section", text: { type: "mrkdwn", text: toMrkdwn(text) } },
+        {
+          type: "actions",
+          elements: actions.map((a) => ({
+            type: "button",
+            action_id: a.actionId,
+            text: { type: "plain_text", text: a.label },
+            value: a.value,
+            ...(a.style ? { style: a.style } : {}),
+          })),
+        },
+        footerBlock(footer(by)),
+      ];
       const posted = (await client.chat.postMessage({
         channel,
         text,
         ...(threadTs ? { thread_ts: threadTs } : {}),
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: toMrkdwn(text) } },
-          {
-            type: "actions",
-            elements: actions.map((a) => ({
-              type: "button",
-              action_id: a.actionId,
-              text: { type: "plain_text", text: a.label },
-              value: a.value,
-              ...(a.style ? { style: a.style } : {}),
-            })),
-          },
-          footerBlock(footer(by)),
-        ],
+        blocks,
       })) as { ts?: string };
-      return posted.ts ? { channel, ts: posted.ts } : undefined;
+      return posted.ts ? { channel, ts: posted.ts, fingerprint: noticeFingerprint(blocks) } : undefined;
     },
 
     postMenu: async (channel, text, menu, threadTs, by) => {
@@ -410,21 +426,31 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       return posted.ts ? { channel, ts: posted.ts } : undefined;
     },
 
-    settleInteractive: async (channel, ts, text, by) => {
-      // Drop the buttons so a decided request cannot be clicked again.
-      await client.chat
-        .update({ channel, ts, ...signedText(text, footer(by)) })
-        // Refused: the text as unsigned sections (still no buttons), and
-        // failing that a text-only edit, so at least the words change.
-        .catch(() =>
-          client.chat.update({
-            channel,
-            ts,
-            text: text || " ",
-            blocks: sectionChunks(text).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } })),
-          }),
-        )
-        .catch(() => client.chat.update({ channel, ts, text }));
+    settleInteractive: settle,
+
+    updateInteractive: async (channel, ts, text, actions, by) => {
+      // The decision shown, the buttons kept. Refused: settle it plainly (no buttons, so no fingerprint), the decision is stored either way.
+      const blocks = [
+        ...sectionChunks(text).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } })),
+        {
+          type: "actions",
+          elements: actions.map((a) => ({
+            type: "button",
+            action_id: a.actionId,
+            text: { type: "plain_text", text: a.label, emoji: true },
+            value: a.value,
+            ...(a.style ? { style: a.style } : {}),
+          })),
+        },
+        footerBlock(footer(by, undefined, true)),
+      ];
+      try {
+        await client.chat.update({ channel, ts, text: text || " ", blocks: blocks as never });
+        return noticeFingerprint(blocks);
+      } catch {
+        await settle(channel, ts, text, by);
+        return undefined;
+      }
     },
 
     addReactions: async (channel, ts, names) => {

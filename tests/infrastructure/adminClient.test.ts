@@ -31,22 +31,22 @@ const footerOf = (a: Record<string, unknown> | undefined): Block | undefined => 
 const signedBy = (a: Record<string, unknown> | undefined): string | undefined => footerOf(a)?.elements?.[0]?.text;
 
 describe("every message the admin client writes is signed", () => {
-  test("a plain post is a markdown block plus a footer signed Jarvis, stamped now", async () => {
+  test("a plain post is a markdown block plus a footer signed Jarvis, with no \"updated\" on a first send", async () => {
     const { calls, admin } = fake();
     await admin.post("C1", "hello **there**", "100.1");
     const [, a] = calls[0]!;
     expect(a).toMatchObject({ channel: "C1", thread_ts: "100.1", text: "hello *there*" });
     expect((a.blocks as Block[])[0]).toMatchObject({ type: "markdown", text: "hello **there**" });
     expect(footerOf(a)).toMatchObject({ type: "context", block_id: FOOTER_BLOCK_ID });
-    expect(signedBy(a)).toBe(footerLine("Jarvis", NOW));
+    expect(signedBy(a)).toBe("Jarvis");
   });
 
   test("the poster names itself", async () => {
     const { calls, admin } = fake();
     await admin.post("C1", "⏰ reminder", undefined, "reminder");
     await admin.postDm("U1", "hi", "inner child Jarvis");
-    expect(signedBy(calls[0]?.[1])).toStartWith("reminder · updated ");
-    expect(signedBy(calls[1]?.[1])).toStartWith("inner child Jarvis · updated ");
+    expect(signedBy(calls[0]?.[1])).toBe("reminder");
+    expect(signedBy(calls[1]?.[1])).toBe("inner child Jarvis");
   });
 
   test("a turn's usage goes into the footer, in the live reply's format", async () => {
@@ -62,8 +62,8 @@ describe("every message the admin client writes is signed", () => {
     };
     await admin.post("D1", "done", "100.1", undefined, usage);
     await admin.post("D1", "done", "100.1", "workflow worker", usage);
-    expect(signedBy(calls[0]?.[1])).toBe(footerLine("Jarvis", NOW, usageFooter(usage)));
-    expect(signedBy(calls[0]?.[1])).toStartWith("Jarvis · claude-opus-5-5 · in 95.9k · out 10.6k · cache 1.62M · $1.30 · 3m 16s · updated ");
+    expect(signedBy(calls[0]?.[1])).toBe(footerLine("Jarvis", undefined, usageFooter(usage)));
+    expect(signedBy(calls[0]?.[1])).toBe("Jarvis · claude-opus-5-5 · in 95.9k · out 10.6k · cache 1.62M · $1.30 · 3m 16s");
     expect(signedBy(calls[1]?.[1])).toStartWith("workflow worker · claude-opus-5-5 · ");
   });
 
@@ -72,7 +72,7 @@ describe("every message the admin client writes is signed", () => {
     await admin.post("C1", 'look\n```blockkit\n[{"type":"divider"}]\n```', undefined, "watch");
     const blocks = calls[0]?.[1].blocks as Block[];
     expect(blocks.map((b) => b.type)).toEqual(["markdown", "divider", "context"]);
-    expect(signedBy(calls[0]?.[1])).toStartWith("watch · ");
+    expect(signedBy(calls[0]?.[1])).toBe("watch");
   });
 
   test("a long plain post is not folded: one markdown block, never a long section", async () => {
@@ -88,7 +88,7 @@ describe("every message the admin client writes is signed", () => {
     const ref = await admin.post("C1", "still here", "100.1", "watch");
     expect(calls).toHaveLength(2);
     expect((calls[1]?.[1].blocks as Block[]).map((b) => b.type)).toEqual(["section", "context"]);
-    expect(signedBy(calls[1]?.[1])).toStartWith("watch · ");
+    expect(signedBy(calls[1]?.[1])).toBe("watch");
     expect(ref).toEqual({ channel: "C1", ts: "2.0" });
   });
 
@@ -122,8 +122,9 @@ describe("every message the admin client writes is signed", () => {
     expect(calls[0]?.[0]).toBe("update");
     expect(calls[0]?.[1]).toMatchObject({ channel: "C1", ts: "5.5", text: "draining: 2 turns left" });
     expect(signedBy(calls[0]?.[1])).toBe(footerLine("Jarvis", NOW));
+    expect(signedBy(calls[0]?.[1])).toContain("updated <!date^");
     expect((calls[1]?.[1].blocks as Block[]).map((b) => b.type)).toEqual(["markdown", "context"]);
-    expect(signedBy(calls[1]?.[1])).toStartWith("command · ");
+    expect(signedBy(calls[1]?.[1])).toBe(footerLine("command", NOW));
   });
 
   test("a refused rewrite still edits the words, text-only", async () => {
@@ -191,7 +192,7 @@ describe("every message the admin client writes is signed", () => {
     for (const [, a] of calls) {
       const types = (a.blocks as Block[]).map((b) => b.type);
       expect(types.slice(-2)).toEqual(["actions", "context"]);
-      expect(signedBy(a)).toStartWith("Jarvis · updated ");
+      expect(signedBy(a)).toBe("Jarvis");
     }
   });
 });

@@ -30,7 +30,7 @@ import type { StatsRepo } from "../infrastructure/db/statsRepo.ts";
 import { fillDays, offsetMsOf, statsDays, windowStart } from "../domain/dashboardStats.ts";
 import { logAndIgnore } from "./ignoredError.ts";
 import { rewordLearning, proposeLearning, type LearningApprovalDeps } from "./learningApproval.ts";
-import { AGENT_SOURCE, pendingApiMessage } from "../domain/learning.ts";
+import { AGENT_SOURCE, pendingApiMessage, type LearningSource } from "../domain/learning.ts";
 import {
   briefToInternal,
   sortInternal,
@@ -563,9 +563,10 @@ export const createDashboardService = (p: DashboardPorts) => {
    */
   teach: async (
     contentIn: unknown,
+    source?: LearningSource,
   ): Promise<Outcome<{ status: "pending"; id: number; message: string }>> => {
     if (!p.learningApproval) return refuse("Learnings are not wired up", 503);
-    const proposed = await proposeLearning(p.learningApproval, text(contentIn), AGENT_SOURCE);
+    const proposed = await proposeLearning(p.learningApproval, text(contentIn), AGENT_SOURCE, source);
     if (!proposed.ok) return refuse(proposed.error);
     const { id } = proposed.learning;
     return done({ status: "pending", id, message: pendingApiMessage(id) });
