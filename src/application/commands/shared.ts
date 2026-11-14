@@ -39,6 +39,7 @@ import type { TurnLogRepo } from "../../infrastructure/db/turnLogRepo.ts";
 import type { WatchRepo } from "../../infrastructure/db/watchRepo.ts";
 import type { ReminderRepo } from "../../infrastructure/db/reminderRepo.ts";
 import type { JourneyRepo } from "../../infrastructure/db/journeyRepo.ts";
+import type { BugReportRepo } from "../../infrastructure/db/bugReportRepo.ts";
 import type { LoopRepo } from "../../infrastructure/db/loopRepo.ts";
 import type { LoopApprovalDeps } from "../loopApproval.ts";
 import type { LearningApprovalDeps } from "../learningApproval.ts";
@@ -115,6 +116,8 @@ export type CommandDeps = {
   reminders?: ReminderRepo;
   /** The bot's own record of its work, for the `journey` command. */
   journeys?: JourneyRepo;
+  /** The bug reports the bot raised about itself, for the `bug-report` command. */
+  bugReports?: BugReportRepo;
   /** Recurring prompts, fired as turns on a timer outside any turn. */
   loops?: LoopRepo;
   /** Owner approval of a script loop a turn wrote: the Approve / Reject DM and the pending row. */

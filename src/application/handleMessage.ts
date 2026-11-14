@@ -41,6 +41,7 @@ import type { UsageRepo } from "../infrastructure/db/usageRepo.ts";
 import type { TurnLogRepo } from "../infrastructure/db/turnLogRepo.ts";
 import type { ReminderRepo } from "../infrastructure/db/reminderRepo.ts";
 import type { JourneyRepo } from "../infrastructure/db/journeyRepo.ts";
+import type { BugReportRepo } from "../infrastructure/db/bugReportRepo.ts";
 import type { LoopRepo } from "../infrastructure/db/loopRepo.ts";
 import type { WatchRepo } from "../infrastructure/db/watchRepo.ts";
 import type { FollowRepo } from "../infrastructure/db/followRepo.ts";
@@ -50,6 +51,7 @@ import type { CommandApprovalRepo } from "../infrastructure/db/commandApprovalRe
 import type { CloudwatchDeps } from "./cloudwatch.ts";
 import type { LoopApprovalDeps } from "./loopApproval.ts";
 import type { LearningApprovalDeps } from "./learningApproval.ts";
+import type { BugReportApprovalDeps } from "./bugReportApproval.ts";
 import type { SettingsRepo } from "../infrastructure/db/settingsRepo.ts";
 import { requestAccess } from "./accessRequests.ts";
 import type { CommandTickets } from "./commandTickets.ts";
@@ -105,6 +107,10 @@ export type HandleMessageDeps = {
   reminders?: ReminderRepo;
   /** The bot's own record of its work, for the `journey` command. */
   journeys?: JourneyRepo;
+  /** The bug reports the bot raised about itself, for the `bug-report` command. */
+  bugReports?: BugReportRepo;
+  /** The owner's Approve / Reject on a bug report, decided by the Slack listener in code. */
+  bugReportApproval?: BugReportApprovalDeps;
   /** Recurring prompts, for the `loop` command. */
   loops?: LoopRepo;
   /** Owner approval of a script loop a turn wrote, and its Approve / Reject buttons. */

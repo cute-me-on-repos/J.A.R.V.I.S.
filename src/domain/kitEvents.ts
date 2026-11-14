@@ -17,6 +17,7 @@
  */
 
 import { CODE_ACTION_PREFIX } from "./cloudwatch.ts";
+import { BUG_REPORT_ACTION_PREFIX } from "./bugReport.ts";
 import { LEARNING_ACTION_PREFIX } from "./learning.ts";
 import { LOOP_ACTION_PREFIX } from "./loop.ts";
 
@@ -262,7 +263,7 @@ const idOf = (e: unknown): string | undefined =>
 
 const isKitElement = (e: unknown): boolean => {
   const id = idOf(e);
-  // `jv:cloudwatch:`, `jv:loop:` and `jv:learning:` buttons are decided in code and are never an
+  // `jv:cloudwatch:`, `jv:loop:`, `jv:learning:` and `jv:bug-report:` buttons are decided in code and are never an
   // open question for the model, so a typed reply must not retire them.
   return (
     !!id &&
@@ -270,7 +271,8 @@ const isKitElement = (e: unknown): boolean => {
     !isSettled(id) &&
     !id.startsWith(CODE_ACTION_PREFIX) &&
     !id.startsWith(LOOP_ACTION_PREFIX) &&
-    !id.startsWith(LEARNING_ACTION_PREFIX)
+    !id.startsWith(LEARNING_ACTION_PREFIX) &&
+    !id.startsWith(BUG_REPORT_ACTION_PREFIX)
   );
 };
 

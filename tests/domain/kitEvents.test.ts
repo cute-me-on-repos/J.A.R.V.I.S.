@@ -387,3 +387,10 @@ describe("voteSubmitters", () => {
     expect([...voteSubmitters(msgs, "1.0", "3.0")]).toEqual(["UASK"]);
   });
 });
+
+describe("code-handled bug report buttons", () => {
+  test("jv:bug-report: buttons are not an open question a typed reply retires", () => {
+    const blocks = [{ type: "actions", elements: [{ type: "button", action_id: "jv:bug-report:approve:1" }, { type: "button", action_id: "jv:bug-report:reject:1" }] }];
+    expect(hasLiveKit(blocks)).toBe(false);
+  });
+});

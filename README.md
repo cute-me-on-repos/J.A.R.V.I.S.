@@ -141,7 +141,7 @@ Every command has two interfaces - use whichever you like. Both triggers are con
 - **slash**: `<SLASH_COMMAND> <command> <args>` (register that single slash command in the Slack app config; it sub-routes to all commands. Socket Mode needs no request URL)
 - **message**: `<COMMAND_PREFIX> <command> <args>` (or the legacy `!<command>`), in a DM or by @-mentioning the bot
 
-A few commands are **internal**: the bot's own tools (today `journey`, its work log), run only by the brain in its own turn through the run helper. A typed line, the slash command, the menu, a schedule or the dashboard gets a short refusal whatever the caller's role (the owner included); they are not in `help`, the command menu, the dashboard command list or the role grants, because no role holds them - the brain runs them as whoever its turn serves.
+A few commands are **internal**: the bot's own tools (today `journey`, its work log, and `bug-report`, which DMs the owner a bug it found in itself with Approve / Reject), run only by the brain in its own turn through the run helper. A typed line, the slash command, the menu, a schedule or the dashboard gets a short refusal whatever the caller's role (the owner included); they are not in `help`, the command menu, the dashboard command list or the role grants, because no role holds them - the brain runs them as whoever its turn serves.
 
 | command | who | effect |
 | --- | --- | --- |
@@ -726,7 +726,7 @@ spoken in it, and at most 3 threads are nudged per sweep.
 
 ## How the brain runs a command
 
-The brain can run the bot's own commands for whoever it is talking to (and its internal ones, like `journey`, which nobody else may run). It never
+The brain can run the bot's own commands for whoever it is talking to (and its internal ones, like `journey` and `bug-report`, which nobody else may run). It never
 names the actor - the bot mints a one-turn **ticket** bound to the current
 speaker, and the command runs as them.
 
