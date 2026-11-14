@@ -53,6 +53,12 @@ export type MessageRepo = {
    * gets, so a conversation cannot bleed into an unrelated one next door.
    */
   recentForThread: (channelId: string, threadTs: string, limit: number) => StoredMessage[];
+  /**
+   * The newest `user` turns of a channel (one thread when given) whose text opens
+   * with one of `prefixes`, oldest-first: the console's hidden steer turns, found
+   * without reading the whole history.
+   */
+  userTurnsStartingWith: (channelId: string, prefixes: readonly string[], limit: number, threadTs?: string) => StoredMessage[];
   clearChannel: (channelId: string) => number;
   count: () => number;
   /** Distinct channels with a turn count, most-recently-active first. */
@@ -139,6 +145,20 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
       recentStmt.all(channelId, Math.max(0, limit)).map(toMessage),
     recentForThread: (channelId, threadTs, limit) =>
       recentThreadStmt.all(channelId, threadTs, Math.max(0, limit)).map(toMessage),
+    userTurnsStartingWith: (channelId, prefixes, limit, threadTs) => {
+      if (prefixes.length === 0 || limit <= 0) return [];
+      // Exact, case-sensitive prefix match (LIKE folds case, so a person typing "i stopped waiting" would take a slot). Nothing marks an internal turn in the row (it even carries a synthetic `slack_ts`), so a person typing a look-alike opening shows up too - accepted, the console is owner-only and read-only.
+      const starts = prefixes.map(() => "substr(content, 1, length(?)) = ?").join(" OR ");
+      const args = prefixes.flatMap((p) => [p, p]);
+      const sql = `SELECT * FROM (
+         SELECT * FROM messages WHERE channel_id = ? AND role = 'user' AND (${starts})${threadTs === undefined ? "" : " AND thread_ts = ?"}
+         ORDER BY id DESC LIMIT ?
+       ) ORDER BY id ASC`;
+      const rows = db
+        .query<Row, (string | number)[]>(sql)
+        .all(channelId, ...args, ...(threadTs === undefined ? [] : [threadTs]), limit);
+      return rows.map(toMessage);
+    },
     clearChannel: (channelId) => {
       const res = clearStmt.run({ $channelId: channelId });
       return Number(res.changes);

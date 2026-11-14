@@ -227,7 +227,8 @@ button.ghost:hover { background: var(--hover); filter: none; }
 .msg-body { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
 .mk-space { display: inline-block; width: 20px; }
 .msg-actions { margin-left: auto; display: flex; gap: 4px; opacity: 0; transition: opacity 0.12s; }
-.msg:hover .msg-actions { opacity: 1; }
+.msg:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+.copy-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 50; background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: var(--radius-sm); font-size: 13px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); pointer-events: none; }
 button.link { background: transparent; color: var(--link); border: none; padding: 3px 6px; font-size: 12.5px; font-weight: 500; }
 button.link:hover { text-decoration: underline; filter: none; }
 button.link.danger-link { color: var(--danger); }
@@ -491,3 +492,22 @@ ol.rank { list-style: none; margin: 4px 0 6px; padding: 0; display: flex; flex-d
 @media (max-width: 760px) {
   .add-user-row .seg, .add-user-row > button[type="submit"] { flex: 1 1 auto; }
 }
+.msg-body a { color: var(--link); text-decoration: underline; }
+.mention { display: inline-block; padding: 0 5px; border-radius: 4px; background: var(--info-soft); color: var(--info); font-weight: 500; }
+button.mention-link { border: 0; font: inherit; font-weight: 500; cursor: pointer; }
+button.mention-link:hover { text-decoration: underline; }
+.mention-broadcast { background: var(--accent-soft); color: var(--link); }
+.msg-body code, .msg-pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: var(--hover); box-shadow: inset 0 0 0 1px var(--border); border-radius: 4px; }
+.msg-body code { padding: 0 4px; }
+.msg-pre { margin: 4px 0; padding: 8px 10px; white-space: pre-wrap; overflow-x: auto; }
+.msg-quote { margin: 4px 0; padding: 0 0 0 10px; border-left: 3px solid var(--border); color: var(--muted); }
+
+/* console: hidden messages (tell / brief / watch / nudge ...) - dashed and dimmed, never posted to Slack */
+.msg.internal { border: 1px dashed var(--border-strong); background: transparent; opacity: 0.82; margin: 2px 0; }
+.msg.internal:hover { opacity: 1; background: var(--hover); }
+.msg.internal .msg-body { font-size: 13px; color: var(--muted); }
+.msg.internal .msg-actions { opacity: 1; }
+.internal-icon { width: 20px; text-align: center; }
+.internal-note { font-style: italic; }
+.internal-from { margin: 2px 0 0 28px; font-size: 12px; }
+.slack-tools label.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); white-space: nowrap; cursor: pointer; }

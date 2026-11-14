@@ -17,7 +17,7 @@ import { isKnownPermission, isOwnerOnlyPermission } from "../domain/permissions.
 import { seededBook, type SeedInput } from "../domain/roleSeed.ts";
 import { addMcpServer, catalogueFor, defaultRoleOf, deleteRole, renameRole, setDefaultRole, type RoleEditDeps } from "./roles.ts";
 import type { RoleRepo } from "../infrastructure/db/roleRepo.ts";
-import { userLabel } from "../domain/slackNames.ts";
+import { cleanIds, CHANNEL_ID, USER_ID, userLabel } from "../domain/slackNames.ts";
 import type { NameResolver } from "./nameResolver.ts";
 import { KIT_MODAL_PREFIX, viewProblem, type KitView } from "../domain/kitEvents.ts";
 import { SETTING_KEYS } from "../infrastructure/db/settingsRepo.ts";
@@ -30,6 +30,10 @@ import { fillDays, offsetMsOf, statsDays, windowStart } from "../domain/dashboar
 import { logAndIgnore } from "./ignoredError.ts";
 import { rewordLearning, proposeLearning, type LearningApprovalDeps } from "./learningApproval.ts";
 import { AGENT_SOURCE, pendingApiMessage, type LearningSource } from "../domain/learning.ts";
+import { briefToInternal, sortInternal, STEER_PREFIXES, turnToInternal, type InternalMessage, type StoredBrief, type StoredTurn } from "../domain/internalMessages.ts";
+
+/** Hidden messages returned per request: the newest, enough to debug a thread without an unbounded read. */
+const INTERNAL_LIMIT = 300;
 
 /** A refused use case: what to tell the caller, and the HTTP-ish status it maps to. */
 export type Refusal = { readonly ok: false; readonly error: string; readonly status: number };
@@ -92,6 +96,12 @@ export type DashboardPorts = {
     readonly threads: (channelId: string) => readonly { readonly threadTs: string; readonly count: number; readonly lastAt: number }[];
     readonly clearThread: (channelId: string, threadTs: string) => unknown;
     readonly clearChannel: (channelId: string) => unknown;
+    /** Stored `user` turns opening with one of the prefixes (the hidden steer turns), see `MessageRepo`. */
+    readonly userTurnsStartingWith?: (channelId: string, prefixes: readonly string[], limit: number, threadTs?: string) => readonly StoredTurn[];
+  };
+  /** Notes one thread left for another (`brief`), see `ThreadBriefRepo`. */
+  readonly briefs?: {
+    readonly toChannel: (channelId: string, limit: number, threadTs?: string) => readonly StoredBrief[];
   };
   readonly learnings: {
     readonly list: () => readonly unknown[];
@@ -621,6 +631,46 @@ export const createDashboardService = (p: DashboardPorts) => {
   memoryThreads: (channelIn: unknown) => {
     const channel = text(channelIn);
     return channel ? p.messages.threads(channel) : [];
+  },
+
+  /**
+   * Display names for the people and channels a page of messages mentions, in
+   * one call: `{ users: { U1: "Kai" }, channels: { C1: "ops" } }`. An id Slack
+   * will not name maps to "" so the page keeps the raw id. Served from the
+   * name resolver's cache, so re-opening a channel costs no Slack call.
+   */
+  slackNames: async (usersIn: string | null, channelsIn: string | null) => {
+    const users = cleanIds(usersIn, USER_ID);
+    const channels = cleanIds(channelsIn, CHANNEL_ID);
+    if (!p.names) {
+      return {
+        users: Object.fromEntries(users.map((id) => [id, storedName(id) ?? ""])),
+        channels: Object.fromEntries(channels.map((id) => [id, ""])),
+      };
+    }
+    const [userNames, channelNames] = await Promise.all([p.names.userNames(users), p.names.channelNames(channels)]);
+    return { users: userNames, channels: channelNames };
+  },
+
+  /**
+   * The messages the bot steered sessions with that never reached Slack (tell,
+   * brief, watch hand-back, worker question, nudge, scheduled loop), oldest
+   * first, for one channel or just one of its threads. Read-only, secrets
+   * redacted. A channel with none gives an empty list, never an error.
+   */
+  memoryInternal: (channelIn: unknown, threadIn?: unknown): Outcome<{ items: InternalMessage[] }> => {
+    const channel = text(channelIn);
+    if (!channel) return refuse("Channel required");
+    // A thread that was asked for but is blank must not widen to the whole channel.
+    const asked = threadIn !== undefined && threadIn !== null;
+    const thread = asked ? text(threadIn) : undefined;
+    if (asked && !thread) return refuse("Thread required");
+    const turns = (p.messages.userTurnsStartingWith?.(channel, STEER_PREFIXES, INTERNAL_LIMIT, thread) ?? []).flatMap((t) => {
+      const m = turnToInternal(t);
+      return m ? [m] : [];
+    });
+    const briefs = (p.briefs?.toChannel(channel, INTERNAL_LIMIT, thread) ?? []).map(briefToInternal);
+    return done({ items: sortInternal([...turns, ...briefs]).slice(-INTERNAL_LIMIT) });
   },
 
   /**

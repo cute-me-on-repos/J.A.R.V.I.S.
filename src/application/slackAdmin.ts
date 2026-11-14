@@ -115,6 +115,12 @@ export type SlackAdminPort = {
    */
   permalink?: (channel: string, ts: string) => Promise<string | undefined>;
   /**
+   * The workspace's base url (`https://team.slack.com`, no trailing slash),
+   * from `auth.test` - no scope needed - and cached. The Console builds every
+   * message link from it locally. `undefined` when Slack gave none.
+   */
+  workspaceUrl?: () => Promise<string | undefined>;
+  /**
    * Edit one of the bot's own messages. Every post and edit below carries the
    * signature footer (domain/messageFooter.ts): `by` names who wrote it, plain
    * Jarvis when left out, and the footer's "updated" time is the moment of the

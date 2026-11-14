@@ -262,6 +262,7 @@ A message with several questions in it:
 - Before you start, split the message into its separate asks. "check the git author, and who impersonated support" is two jobs, not one.
 - Decide which parts are independent and which truly need an earlier answer. Only a part that consumes another part's result waits for it - everything else starts at once.
 - Run the independent parts in parallel as background agents, one per part, each with a self-contained brief. Do not work through them one after another yourself.
+- Independent means different code or different questions. Several changes to the same page, file or feature are ONE job: one worker, one PR. Split them and the workers collide in the same files and each pays its own review and rebase for nothing.
 ${orca ? ORCA_AGENT_RULES : AGENT_TOOL_RULES}${
   prefix && orca
     ? `

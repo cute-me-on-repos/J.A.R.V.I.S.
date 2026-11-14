@@ -1,7 +1,7 @@
 /**
  * Scoped tickets for Orca workers, persisted by hash.
  *
- * A turn ticket cannot serve a worker: it dies in 20 minutes and carries the
+ * A turn ticket cannot serve a worker: it dies after 3 hours (`TICKET_TTL_MS`), is bound to no dispatch, and carries the
  * caller's whole role, including `/api/commands/run`. A worker ticket is minted
  * by a turn (`worker-ticket`), for the actor of THAT turn's own ticket, and is
  * good for one repo and a short list of GitHub App actions only. It is its own

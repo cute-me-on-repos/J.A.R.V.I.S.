@@ -53,3 +53,17 @@ export const mentionedIds = (text: string): string[] => [...new Set([...text.mat
 /** `<@U1>` -> `@Kai (U1)`, using labels already resolved (`userLabel` output). */
 export const labelMentions = (text: string, labels: Readonly<Record<string, string>>): string =>
   text.replace(MENTION, (_m, id: string) => `@${labels[id] ?? userLabel(id)}`);
+
+/** Most ids one `slack/names` request resolves; a page of messages never holds more mentions than this. */
+export const NAMES_MAX_IDS = 100;
+
+/**
+ * The ids of a comma-separated query value that look like Slack ids of the
+ * given shape, deduplicated and capped - anything else is dropped, so a
+ * malformed value never reaches Slack.
+ */
+export const cleanIds = (raw: string | null | undefined, shape: RegExp): string[] =>
+  [...new Set((raw ?? "").split(",").map((s) => s.trim()).filter((s) => shape.test(s)))].slice(0, NAMES_MAX_IDS);
+
+export const USER_ID = /^[UW][A-Z0-9]{2,}$/;
+export const CHANNEL_ID = /^[CGD][A-Z0-9]{2,}$/;

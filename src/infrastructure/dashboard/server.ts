@@ -17,6 +17,7 @@ import type { Clock } from "../../application/ports.ts";
 import type { CommandLogRepo } from "../db/commandLogRepo.ts";
 import type { UsageRepo } from "../db/usageRepo.ts";
 import type { MessageRepo } from "../db/messageRepo.ts";
+import type { ThreadBriefRepo } from "../db/threadBriefRepo.ts";
 import type { UserRepo } from "../db/userRepo.ts";
 import type { LearningsRepo } from "../db/learningsRepo.ts";
 import type { LearningApprovalDeps } from "../../application/learningApproval.ts";
@@ -52,6 +53,8 @@ export type DashboardDeps = {
   /** Local database MCP servers (`DB_MCP_SERVERS`), offered for denial. */
   dbMcpServers?: readonly string[];
   messages: MessageRepo;
+  /** Thread briefs, for the console's hidden-message timeline. */
+  briefs?: ThreadBriefRepo;
   learnings: LearningsRepo;
   /**
    * The memory adapter, when one is configured.
@@ -233,6 +236,7 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
     profile: deps.profile,
     users: deps.users,
     messages: deps.messages,
+    briefs: deps.briefs,
     learnings: deps.learnings,
     learningApproval: deps.learningApproval,
     settings: deps.settings,
@@ -308,6 +312,10 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           return Response.json(app.memoryChannels());
         case "/api/memory/threads":
           return Response.json(app.memoryThreads(q("channel")));
+        case "/api/memory/internal": {
+          const found = app.memoryInternal(q("channel"), q("thread") ?? undefined);
+          return found.ok ? Response.json(found.value) : jsonError(found.error, found.status);
+        }
         case "/api/stats":
           return Response.json(await app.stats(q("days")));
         case "/api/slack/members": {
@@ -325,6 +333,11 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
         }
         case "/api/slack/thread":
           return slackGuard(() => deps.slack!.replies(q("channel") ?? "", q("ts") ?? ""));
+        // Names for the mentions on screen, one batch per view (`?users=U1,U2&channels=C1`).
+        case "/api/slack/names":
+          return slackGuard(() => app.slackNames(q("users"), q("channels")));
+        case "/api/slack/workspace":
+          return slackGuard(async () => ({ url: (await deps.slack!.workspaceUrl?.()) ?? null }));
       }
       return jsonError("Not found", 404);
     }

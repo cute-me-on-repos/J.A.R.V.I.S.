@@ -78,6 +78,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
   const footer = (by?: string, usage?: FooterUsage): string =>
     footerLine(by ?? SIGNATURES.jarvis, clock(), usage ? usageFooter(usage) : undefined);
   let botUserId: string | undefined;
+  let workspace: string | undefined;
 
   const settle = async (channel: string, ts: string, text: string, by?: string): Promise<void> => {
     // Drop the buttons so a decided request cannot be clicked again.
@@ -234,6 +235,13 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       } catch {
         return undefined; // a link is a convenience, never a reason to fail
       }
+    },
+
+    workspaceUrl: async () => {
+      if (workspace) return workspace;
+      const auth = (await client.auth.test()) as { url?: string };
+      workspace = auth.url?.replace(/\/+$/, "") || undefined;
+      return workspace;
     },
 
     update: async (channel, ts, text, by) => {

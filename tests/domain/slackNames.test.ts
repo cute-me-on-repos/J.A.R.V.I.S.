@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { conversationLabel, labelMentions, mentionedIds, userLabel } from "../../src/domain/slackNames.ts";
+import { CHANNEL_ID, cleanIds, conversationLabel, labelMentions, mentionedIds, USER_ID, userLabel } from "../../src/domain/slackNames.ts";
 
 describe("slack names", () => {
   test("a person is always name and id, never a bare id", () => {
@@ -25,5 +25,14 @@ describe("slack names", () => {
     expect(mentionedIds(text)).toEqual(["U1", "W2"]);
     expect(labelMentions(text, { U1: "Kai (U1)" })).toBe("ping @Kai (U1) and @unknown (W2), again @Kai (U1)");
     expect(labelMentions("no mentions", {})).toBe("no mentions");
+  });
+});
+
+describe("cleanIds", () => {
+  test("keeps well-formed ids once, drops the rest, caps the count", () => {
+    expect(cleanIds("U1A, U1A,bad,<@U2>,w3b,,U4C", USER_ID)).toEqual(["U1A", "U4C"]);
+    expect(cleanIds("C1A,G2B,D3C,U4D,c5e", CHANNEL_ID)).toEqual(["C1A", "G2B", "D3C"]);
+    expect(cleanIds(null, USER_ID)).toEqual([]);
+    expect(cleanIds(Array.from({ length: 300 }, (_, i) => `U${i}AB`).join(","), USER_ID)).toHaveLength(100);
   });
 });
