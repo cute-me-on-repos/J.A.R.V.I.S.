@@ -1055,7 +1055,7 @@ In the `acme` org, every PR is committed and opened as the app
 `kai-at-acme`.
 
 **Orca workers** outlive the turn that started them, and a turn's ticket is
-gone after 20 minutes, so a worker gets its own scoped one. In the turn (a role holding
+gone after 3 hours, so a worker gets its own scoped one. In the turn (a role holding
 `command:worker-ticket`, admin and owner as seeded, through the run helper; the command refuses anything that is not the
 brain's own run bridge, so a typed line, a schedule, an errand or the menu never
 mint one):

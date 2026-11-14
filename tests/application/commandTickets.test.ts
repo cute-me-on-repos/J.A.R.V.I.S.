@@ -98,6 +98,10 @@ describe("commandTickets", () => {
     expect(!after.ok && after.reason).toBe("expired");
   });
 
+  test("it outlives a long turn: 3 hours, like the Slack helper ticket", () => {
+    expect(TICKET_TTL_MS).toBe(3 * 60 * 60_000);
+  });
+
   test("expired tickets are swept rather than accumulating", () => {
     const t = { now: 0 };
     let n = 0;
