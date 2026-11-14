@@ -9,16 +9,19 @@ import {
   rewordLearning,
   saveActive,
 } from "../../src/application/learningApproval.ts";
-import { AGENT_SOURCE, LEARNING_APPROVE_ACTION, LEARNING_REJECT_ACTION, MAX_LEARNING_CHARS, approvalText } from "../../src/domain/learning.ts";
+import { AGENT_SOURCE, LEARNING_APPROVE_ACTION, LEARNING_REJECT_ACTION, MAX_LEARNING_CHARS, approvalCore, approvalText, settledText } from "../../src/domain/learning.ts";
 import { buildSystemPrompt } from "../../src/domain/personality.ts";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
 import { createLearningsRepo } from "../../src/infrastructure/db/learningsRepo.ts";
 import { migrate } from "../../src/infrastructure/db/schema.ts";
-import { actor, build, OWNER, slackCalls } from "./commandsFixture.ts";
+import { actor, build, noticeBlocks, OWNER, slackCalls } from "./commandsFixture.ts";
 
 const MEMBER = actor({ slackId: "U0EXE0001", role: "executer" });
 const ADMIN = actor({ slackId: "U0ADMIN0001", role: "admin" });
 const FACT = "the staging deploy needs the VPN";
+
+/** The blocks the notice shows right now, as Slack would hand them back on a press. */
+const shownBy = (row: { noticeChannel: string; noticeTs: string }): unknown[] => slackCalls.blocks[`${row.noticeChannel}:${row.noticeTs}`] ?? [];
 
 const run = (d: CommandDeps, who: ReturnType<typeof actor>, line: string, fromBrainRun = false) =>
   dispatchCommand(d, who, "C1", line, { prefix: "X/jv", fromBrainRun });
@@ -99,7 +102,8 @@ describe("the owner decides", () => {
     expect(d.learnings!.list().map((l) => l.content)).toEqual([FACT]);
     expect(d.learnings!.pending()).toEqual([]);
     expect(promptOf(d)).toContain(FACT);
-    expect(slackCalls.settled.at(-1)?.text).toContain(`learning #${id} approved by <@${OWNER}>`);
+    expect(slackCalls.updated.at(-1)?.text).toContain(`learning #${id} approved by <@${OWNER}>`);
+    expect(slackCalls.settled).toEqual([]);
     expect(d.learnings!.get(id)).toMatchObject({ status: "active" });
   });
 
@@ -111,7 +115,7 @@ describe("the owner decides", () => {
     expect(d.learnings!.list()).toEqual([]);
     expect(injectedLearnings(d.learnings!)).toEqual([]);
     expect(promptOf(d)).not.toContain(FACT);
-    expect(slackCalls.settled.at(-1)?.text).toContain("rejected");
+    expect(slackCalls.updated.at(-1)?.text).toContain("rejected");
 
     expect(await run(d, actor(), `learn approve ${id}`)).toContain("already answered");
     expect(d.learnings!.list()).toEqual([]);
@@ -208,6 +212,7 @@ describe("the Approve / Reject buttons", () => {
         channel: row.noticeChannel,
         messageTs: row.noticeTs,
         shown: [approvalText(row.id, FACT, MEMBER.slackId)],
+        blocks: shownBy(row),
         ...over,
       });
     return { d, row, press };
@@ -217,7 +222,7 @@ describe("the Approve / Reject buttons", () => {
     const { d, row, press } = await proposed();
     expect(await press()).toEqual({ kind: "approved", id: row.id });
     expect(injectedLearnings(d.learnings!)).toEqual([FACT]);
-    expect(slackCalls.settled.at(-1)).toMatchObject({ channel: row.noticeChannel, ts: row.noticeTs });
+    expect(slackCalls.updated.at(-1)).toMatchObject({ channel: row.noticeChannel, ts: row.noticeTs });
   });
 
   test("the owner's Reject keeps it out for good", async () => {
@@ -294,6 +299,103 @@ describe("the Approve / Reject buttons", () => {
     expect(await press({ actionId: "jv:learning:other" })).toEqual({ kind: "unknown" });
     expect(await press({ value: "999" })).toEqual({ kind: "unknown" });
     expect(d.learnings!.list()).toHaveLength(1);
+  });
+});
+
+describe("the notice keeps its buttons after a decision", () => {
+  const decided = async (first: "approve" | "reject") => {
+    const d = build();
+    await run(d, MEMBER, `learn ${FACT}`);
+    const row = d.learnings!.pending()[0]!;
+    const press = (action: "approve" | "reject", over: Partial<Parameters<typeof decideLearningPress>[1]> = {}) =>
+      decideLearningPress(d.learningApproval!, {
+        slackUserId: OWNER,
+        actionId: action === "approve" ? LEARNING_APPROVE_ACTION : LEARNING_REJECT_ACTION,
+        value: String(row.id),
+        channel: row.noticeChannel,
+        messageTs: row.noticeTs,
+        shown: [approvalText(row.id, FACT, MEMBER.slackId)],
+        blocks: shownBy(row),
+        ...over,
+      });
+    await press(first);
+    return { d, row, press };
+  };
+
+  test("approved: the pressed button says so and Reject stays pressable", async () => {
+    const { row } = await decided("approve");
+    expect(slackCalls.settled).toEqual([]);
+    expect(slackCalls.updated.at(-1)).toMatchObject({
+      channel: row.noticeChannel,
+      ts: row.noticeTs,
+      buttons: [`${LEARNING_APPROVE_ACTION}::white_check_mark: Approved by the owner`, `${LEARNING_REJECT_ACTION}:Reject`],
+    });
+  });
+
+  test("rejected: the pressed button says so and Approve stays pressable", async () => {
+    await decided("reject");
+    expect(slackCalls.updated.at(-1)?.buttons).toEqual([
+      `${LEARNING_APPROVE_ACTION}:Approve`,
+      `${LEARNING_REJECT_ACTION}::x: Rejected by the owner`,
+    ]);
+  });
+
+  test("approve then reject flips it back out of the prompt", async () => {
+    const { d, row, press } = await decided("approve");
+    expect(injectedLearnings(d.learnings!)).toEqual([FACT]);
+    // Slack may flag our own rewrite of the notice as edited
+    expect(await press("reject", { edited: true })).toEqual({ kind: "rejected", id: row.id });
+    expect(d.learnings!.get(row.id)?.status).toBe("rejected");
+    expect(injectedLearnings(d.learnings!)).toEqual([]);
+    expect(slackCalls.updated.at(-1)?.buttons[1]).toContain("Rejected by");
+  });
+
+  test("reject then approve activates it", async () => {
+    const { d, row, press } = await decided("reject");
+    expect(injectedLearnings(d.learnings!)).toEqual([]);
+    expect(await press("approve")).toEqual({ kind: "approved", id: row.id });
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+    expect(injectedLearnings(d.learnings!)).toEqual([FACT]);
+    expect(slackCalls.updated.at(-1)?.buttons[0]).toContain("Approved by");
+  });
+
+  test("pressing the decision already made changes nothing", async () => {
+    const { d, row, press } = await decided("approve");
+    const rewrites = slackCalls.updated.length;
+    expect(await press("approve")).toEqual({ kind: "refused", why: "decided", id: row.id });
+    expect(slackCalls.updated).toHaveLength(rewrites);
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+  });
+
+  test("a non-owner cannot flip a decided learning", async () => {
+    const { d, row, press } = await decided("approve");
+    expect(await press("reject", { slackUserId: MEMBER.slackId })).toEqual({ kind: "refused", why: "not-owner", id: row.id });
+    expect(await press("reject", { slackUserId: ADMIN.slackId })).toMatchObject({ why: "not-owner" });
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+    expect(injectedLearnings(d.learnings!)).toEqual([FACT]);
+  });
+
+  test("a flip from another message or one that no longer shows the fact is forged", async () => {
+    const { d, row, press } = await decided("approve");
+    expect(await press("reject", { messageTs: "999.999" })).toEqual({ kind: "refused", why: "forged", id: row.id });
+    expect(await press("reject", { channel: "C0TEST0001" })).toMatchObject({ why: "forged" });
+    expect(await press("reject", { shown: [] })).toMatchObject({ why: "forged" });
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+  });
+
+  test("the typed command still cannot reopen a decided learning", async () => {
+    const { d, row } = await decided("approve");
+    expect(await run(d, actor(), `learn reject ${row.id}`)).toContain("already answered");
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+  });
+
+  test("a port without updateInteractive settles the notice as before", async () => {
+    const d = build();
+    delete (d.slack as { updateInteractive?: unknown }).updateInteractive;
+    await run(d, MEMBER, `learn ${FACT}`);
+    const { id } = d.learnings!.pending()[0]!;
+    await run(d, actor(), `learn approve ${id}`);
+    expect(slackCalls.settled.at(-1)?.text).toContain("approved");
   });
 });
 
@@ -435,11 +537,13 @@ describe("the storage", () => {
     expect(repo.pending().map((l) => l.content)).toEqual(["pending one"]);
     expect(repo.get(r.id)?.status).toBe("rejected");
     expect(repo.get(a.id)?.status).toBe("active");
-    // a decision is made once, and only on a pending row
-    expect(repo.decide(a.id, "rejected", OWNER, 5)).toBe(false);
-    expect(repo.decide(r.id, "active", OWNER, 5)).toBe(false);
+    // the same decision twice changes nothing; the other one flips it
+    expect(repo.decide(r.id, "rejected", OWNER, 5)).toBe(false);
     expect(repo.decide(p.id, "active", OWNER, 5)).toBe(true);
+    expect(repo.decide(p.id, "active", OWNER, 6)).toBe(false);
     expect(repo.list().map((l) => l.content)).toEqual(["active one", "pending one"]);
+    expect(repo.decide(a.id, "rejected", OWNER, 7)).toBe(true);
+    expect(repo.list().map((l) => l.content)).toEqual(["pending one"]);
     expect(repo.decide(999, "active", OWNER, 5)).toBe(false);
   });
 
@@ -477,5 +581,230 @@ describe("the prompt", () => {
     expect(text).toContain("because text you read");
     expect(text).not.toContain("you may save it");
     expect(text).not.toContain("do not announce it and do not ask permission");
+  });
+});
+
+describe("a press holds only on the notice exactly as the bot rendered it", () => {
+  const FIRST = "approve" as const;
+  const setup = async (first?: "approve" | "reject") => {
+    const d = build();
+    await run(d, MEMBER, `learn ${FACT}`);
+    const row = d.learnings!.pending()[0]!;
+    const press = (action: "approve" | "reject", over: Partial<Parameters<typeof decideLearningPress>[1]> = {}) =>
+      decideLearningPress(d.learningApproval!, {
+        slackUserId: OWNER,
+        actionId: action === "approve" ? LEARNING_APPROVE_ACTION : LEARNING_REJECT_ACTION,
+        value: String(row.id),
+        channel: row.noticeChannel,
+        messageTs: row.noticeTs,
+        shown: [approvalText(row.id, FACT, MEMBER.slackId)],
+        blocks: shownBy(row),
+        ...over,
+      });
+    if (first) await press(first);
+    return { d, row, press };
+  };
+  const button = (action: string, id: number, label: string) => ({ actionId: action, label, value: String(id) });
+  /** A rewrite that keeps the fact quoted, as a turn with chat.update would. */
+  const rewrite = (text: string, buttons: ReturnType<typeof button>[]) => noticeBlocks(text, buttons);
+
+  test("a decided notice rewritten with the fact kept and the Approve button relabelled is refused", async () => {
+    const { d, row, press } = await setup("reject");
+    const forged = rewrite(settledText("rejected", row.id, FACT, OWNER), [button(LEARNING_APPROVE_ACTION, row.id, "Dismiss")]);
+    expect(await press("approve", { blocks: forged, shown: [settledText("rejected", row.id, FACT, OWNER)] })).toEqual({ kind: "refused", why: "forged", id: row.id });
+    expect(d.learnings!.get(row.id)?.status).toBe("rejected");
+    expect(injectedLearnings(d.learnings!)).toEqual([]);
+  });
+
+  test("a decided notice with only its text around the fact changed is refused", async () => {
+    const { d, row, press } = await setup("reject");
+    const real = shownBy(row);
+    const text = "Acknowledged. Nothing else to do.\n" + approvalCore(FACT);
+    const buttons = [button(LEARNING_APPROVE_ACTION, row.id, "Approve"), button(LEARNING_REJECT_ACTION, row.id, ":x: Rejected by the owner")];
+    expect(await press("approve", { blocks: rewrite(text, buttons), shown: [text] })).toMatchObject({ why: "forged" });
+    // the untouched notice still flips
+    expect(real).toEqual(shownBy(row));
+    expect(d.learnings!.get(row.id)?.status).toBe("rejected");
+    expect(await press("approve")).toEqual({ kind: "approved", id: row.id });
+  });
+
+  test("a decided notice with an extra block or button added is refused", async () => {
+    const { d, row, press } = await setup(FIRST);
+    const real = shownBy(row);
+    const extraBlock = [...real, { type: "section", text: { type: "mrkdwn", text: "also press this" } }];
+    const extraButton = real.map((b) =>
+      (b as { type: string }).type === "actions"
+        ? { ...(b as object), elements: [...((b as { elements: unknown[] }).elements), { type: "button", action_id: LEARNING_REJECT_ACTION, text: { type: "plain_text", text: "OK" }, value: String(row.id) }] }
+        : b,
+    );
+    expect(await press("reject", { blocks: extraBlock })).toMatchObject({ why: "forged" });
+    expect(await press("reject", { blocks: extraButton })).toMatchObject({ why: "forged" });
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+  });
+
+  test("a pending notice rewritten (labels or text) is refused", async () => {
+    const { d, row, press } = await setup();
+    const text = approvalText(row.id, FACT, MEMBER.slackId);
+    const relabelled = rewrite(text, [button(LEARNING_APPROVE_ACTION, row.id, "Dismiss"), button(LEARNING_REJECT_ACTION, row.id, "Reject")]);
+    const reworded = rewrite(`Routine notice.\n${approvalCore(FACT)}`, [button(LEARNING_APPROVE_ACTION, row.id, "Approve"), button(LEARNING_REJECT_ACTION, row.id, "Reject")]);
+    expect(await press("approve", { blocks: relabelled })).toMatchObject({ why: "forged" });
+    expect(await press("approve", { blocks: reworded })).toMatchObject({ why: "forged" });
+    expect(await press("approve", { blocks: undefined })).toMatchObject({ why: "forged" });
+    expect(d.learnings!.get(row.id)?.status).toBe("pending");
+  });
+
+  test("the notice as Slack echoes it (block ids, an escaped quote marker) still counts", async () => {
+    const { d, row, press } = await setup("approve");
+    const echoed = shownBy(row).map((b, i) => {
+      const block: Record<string, unknown> = { ...(b as Record<string, unknown>), block_id: `b${i}` };
+      const text = block.text as { type: string; text: string } | undefined;
+      return text ? { ...block, text: { ...text, verbatim: false, text: text.text.replaceAll("> ", "&gt; ") } } : block;
+    });
+    expect(await press("reject", { blocks: echoed, edited: true })).toEqual({ kind: "rejected", id: row.id });
+    expect(d.learnings!.get(row.id)?.status).toBe("rejected");
+  });
+
+  test("each rewrite by the bot stores the fingerprint of what it wrote; a new proposal clears it", async () => {
+    const { d, row, press } = await setup();
+    const pendingFp = d.learnings!.get(row.id)!.noticeFingerprint;
+    expect(pendingFp).not.toBe("");
+    await press("approve");
+    const decidedFp = d.learnings!.get(row.id)!.noticeFingerprint;
+    expect(decidedFp).not.toBe("");
+    expect(decidedFp).not.toBe(pendingFp);
+    await press("reject");
+    expect(d.learnings!.get(row.id)!.noticeFingerprint).not.toBe(decidedFp);
+    d.learnings!.update(row.id, "reworded", "pending");
+    expect(d.learnings!.get(row.id)).toMatchObject({ noticeTs: "", noticeFingerprint: "" });
+  });
+
+  test("a notice that was settled without buttons (the rewrite failed) cannot be pressed", async () => {
+    const { d, row, press } = await setup();
+    d.learningApproval = {
+      ...d.learningApproval!,
+      slack: { ...d.learningApproval!.slack!, updateInteractive: async () => undefined },
+    };
+    expect((await press("approve")).kind).toBe("approved");
+    expect(d.learnings!.get(row.id)!.noticeFingerprint).toBe("");
+    expect(await press("reject")).toMatchObject({ why: "forged" });
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+  });
+
+  test("a pending notice from before the fingerprint existed keeps the old checks: untouched works, edited does not", async () => {
+    const { d, row, press } = await setup();
+    d.learnings!.setNotice(row.id, row.noticeChannel, row.noticeTs, "");
+    expect(await press("approve", { edited: true })).toMatchObject({ why: "forged" });
+    expect(await press("approve")).toEqual({ kind: "approved", id: row.id });
+  });
+
+  test("the migration adds the fingerprint column to an older table, twice over", () => {
+    const old = openDatabase(":memory:");
+    old.exec("ALTER TABLE learnings DROP COLUMN notice_fingerprint");
+    old.exec("PRAGMA user_version = 39");
+    migrate(old);
+    migrate(old);
+    const repo = createLearningsRepo(old);
+    const l = repo.add("x", "agent", 1, "pending");
+    repo.setNotice(l.id, "D1", "1.1", "abc");
+    expect(repo.get(l.id)).toMatchObject({ noticeFingerprint: "abc" });
+    expect(old.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe("where the notice goes", () => {
+  const OWNER_DM = "D-owner-dm";
+  const THREAD = "1794660718.333719";
+  /** The fixture's Slack plus the three lookups the source check uses. */
+  const withSlack = (rootBy: string | undefined) => {
+    const d = build();
+    d.learningApproval = {
+      ...d.learningApproval!,
+      slack: {
+        ...d.slack!,
+        openDm: async () => OWNER_DM,
+        lookup: async (_c, ts) => ({ ts, userId: rootBy, broadcast: false, text: "root" }),
+        permalink: async (c, ts) => `https://example.slack.com/archives/${c}/p${ts.replace(".", "")}`,
+      },
+    };
+    return d;
+  };
+  const source = (channel: string) => ({ channel, threadTs: THREAD, runId: "sess-1" });
+
+  test("a turn in the owner's DM: the notice and buttons sit in that thread, and the press holds there", async () => {
+    const d = withSlack(undefined);
+    const r = await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source(OWNER_DM));
+    const row = d.learnings!.get(r.ok ? r.learning.id : -1)!;
+    expect(row).toMatchObject({ sourceChannel: OWNER_DM, sourceThreadTs: THREAD, sourceRunId: "sess-1" });
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER_DM, threadTs: THREAD });
+    expect(slackCalls.buttons).toHaveLength(2);
+    expect(row).toMatchObject({ noticeChannel: OWNER_DM });
+    expect(row.noticeTs).not.toBe("");
+    const out = await decideLearningPress(d.learningApproval!, {
+      slackUserId: OWNER,
+      actionId: LEARNING_APPROVE_ACTION,
+      value: String(row.id),
+      channel: row.noticeChannel,
+      messageTs: row.noticeTs,
+      shown: [approvalText(row.id, FACT, AGENT_SOURCE)],
+      blocks: shownBy(row),
+    });
+    expect(out).toEqual({ kind: "approved", id: row.id });
+    expect(slackCalls.updated.at(-1)).toMatchObject({ channel: OWNER_DM, ts: row.noticeTs });
+  });
+
+  test("a thread the owner started in a channel: the notice is posted there", async () => {
+    const d = withSlack(OWNER);
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("C0CHAN"));
+    expect(slackCalls.posts[0]).toMatchObject({ channel: "C0CHAN", threadTs: THREAD });
+    expect(d.learnings!.pending()[0]).toMatchObject({ noticeChannel: "C0CHAN" });
+  });
+
+  test("a thread someone else started: the owner's DM, top level, with a link to the thread", async () => {
+    const d = withSlack(MEMBER.slackId);
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("C0CHAN"));
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER });
+    expect(slackCalls.posts[0]?.threadTs).toBeUndefined();
+    expect(slackCalls.posts[0]?.text).toContain("https://example.slack.com/archives/C0CHAN/p1794660718333719");
+    expect(d.learnings!.pending()[0]).toMatchObject({ sourceChannel: "C0CHAN", noticeChannel: OWNER });
+  });
+
+  test("a member's own DM with the bot is not the owner's: fall back to the owner DM", async () => {
+    const d = withSlack(undefined);
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("D-member-dm"));
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER });
+    expect(slackCalls.posts[0]?.threadTs).toBeUndefined();
+  });
+
+  test("no source (a dead ticket): today's behaviour, no link", async () => {
+    const d = withSlack(OWNER);
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE);
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER });
+    expect(slackCalls.posts[0]?.text).not.toContain("this thread");
+    expect(d.learnings!.pending()[0]).toMatchObject({ sourceChannel: "", sourceThreadTs: "", sourceRunId: "" });
+  });
+
+  test("a thread post that fails falls back to the owner's DM", async () => {
+    const d = withSlack(OWNER);
+    const slack = d.learningApproval!.slack!;
+    d.learningApproval = { ...d.learningApproval!, slack: { ...slack, postInteractive: async () => { throw new Error("nope"); } } };
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("C0CHAN"));
+    expect(slackCalls.posts[0]).toMatchObject({ channel: OWNER });
+    expect(d.learnings!.pending()[0]?.noticeChannel).toBe(OWNER);
+  });
+
+  test("the migration adds the source columns to an older table", () => {
+    const old = openDatabase(":memory:");
+    for (const col of ["source_channel", "source_thread_ts", "source_run_id"]) old.exec(`ALTER TABLE learnings DROP COLUMN ${col}`);
+    old.exec("PRAGMA user_version = 38");
+    migrate(old);
+    migrate(old);
+    const repo = createLearningsRepo(old);
+    expect(repo.add("x", "agent", 1, "pending", source("C1")).sourceThreadTs).toBe(THREAD);
+  });
+
+  test("the prompt's curl carries the turn's ticket and session", () => {
+    const text = buildSystemPrompt({ botName: "Jarvis", learnUrl: "http://127.0.0.1:2002/api/learnings" });
+    expect(text).toContain("X-Jarvis-Ticket: $JARVIS_RUN_TICKET");
+    expect(text).toContain("X-Jarvis-Session: $BOT_SESSION_ID");
   });
 });

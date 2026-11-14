@@ -125,3 +125,25 @@ describe("refusalMessage", () => {
     expect(refusalMessage("expired", 50)).toContain("not valid any more");
   });
 });
+
+describe("commandTickets.peek", () => {
+  test("resolves the turn without spending a use", () => {
+    const tickets = createCommandTickets(at({ now: 0 }), () => "tk", 2);
+    const token = tickets.issue({ actor: "Upal", channel: "C1", threadTs: "9.9" });
+    for (let i = 0; i < 5; i++) expect(tickets.peek(token).ok).toBe(true);
+    const first = tickets.redeem(token);
+    expect(first.ok && first.left).toBe(1);
+  });
+
+  test("a spent ticket still says where the turn ran; unknown and expired ones refuse", () => {
+    const t = { now: 0 };
+    const tickets = createCommandTickets(at(t), () => "tk", 1);
+    const token = tickets.issue({ actor: "Upal", channel: "C1", threadTs: "9.9" });
+    expect(tickets.redeem(token).ok).toBe(true);
+    expect(tickets.redeem(token)).toMatchObject({ ok: false, reason: "spent" });
+    expect(tickets.peek(token)).toMatchObject({ ok: true, ctx: { channel: "C1", threadTs: "9.9" }, left: 0 });
+    expect(tickets.peek("nope")).toMatchObject({ ok: false, reason: "unknown" });
+    t.now = TICKET_TTL_MS + 1;
+    expect(tickets.peek(token)).toMatchObject({ ok: false, reason: "expired" });
+  });
+});

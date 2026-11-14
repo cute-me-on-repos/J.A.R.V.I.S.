@@ -1328,7 +1328,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
   // HERE and never handed to the model (the kit listener skips
   // `LEARNING_ACTION_PREFIX`): a press that went through a model turn could be
   // talked into approving the very fact a prompt injection just proposed.
-  app.action(new RegExp(`^${LEARNING_ACTION_PREFIX}`), (async ({ ack, body, action, client }: Omit<ApprovalArgs, "body"> & { body: ApprovalArgs["body"] & { message?: { ts?: string; thread_ts?: string; edited?: unknown; blocks?: { text?: { text?: string } }[] } }; client: KitClient }) => {
+  app.action(new RegExp(`^${LEARNING_ACTION_PREFIX}`), (async ({ ack, body, action, client }: Omit<ApprovalArgs, "body"> & { body: ApprovalArgs["body"] & { message?: { ts?: string; thread_ts?: string; edited?: unknown; blocks?: ({ text?: { text?: string } } & Record<string, unknown>)[] } }; client: KitClient }) => {
     await ack();
     const by = body.user?.id;
     const value = action?.value;
@@ -1342,6 +1342,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
         messageTs: body.message?.ts,
         edited: body.message?.edited !== undefined,
         shown: (body.message?.blocks ?? []).flatMap((b) => (typeof b.text?.text === "string" ? [b.text.text] : [])),
+        blocks: body.message?.blocks ?? [],
       });
       log(`learning press ${outcome.kind} by ${by}`);
       const channel = body.channel?.id;

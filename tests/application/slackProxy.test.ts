@@ -6,7 +6,10 @@ const BOT_TOKEN = "xoxb-the-bots-own-token";
 
 type Seen = { url: string; init: RequestInit };
 
-const setup = (answer: (url: string, init: RequestInit) => Response | Promise<Response> = () => Response.json({ ok: true })) => {
+const setup = (
+  answer: (url: string, init: RequestInit) => Response | Promise<Response> = () => Response.json({ ok: true }),
+  isNotice?: (channel: string, ts: string) => boolean,
+) => {
   const seen: Seen[] = [];
   const tickets = createSlackTickets(() => 0);
   const logs: string[] = [];
@@ -14,9 +17,33 @@ const setup = (answer: (url: string, init: RequestInit) => Response | Promise<Re
     seen.push({ url: String(url), init: init ?? {} });
     return answer(String(url), init ?? {});
   }) as typeof fetch;
-  const proxy = createSlackProxy({ tickets, botToken: BOT_TOKEN, fetchFn, log: (l) => logs.push(l) });
+  const proxy = createSlackProxy({ tickets, botToken: BOT_TOKEN, isNotice, fetchFn, log: (l) => logs.push(l) });
   return { proxy, tickets, seen, logs };
 };
+
+describe("Slack proxy and approval notices", () => {
+  const notices = new Set(["C0TEST00001:55.5"]);
+  const lookup = (channel: string, ts: string) => notices.has(`${channel}:${ts}`);
+
+  test("refuses a turn's chat.update on a notice without calling Slack, and logs only who and why", async () => {
+    const { proxy, tickets, seen, logs } = setup(undefined, lookup);
+    const ticket = tickets.issue({ channel: "C0TEST00001", threadTs: "1.1" });
+    const answer = await proxy.call({ ticket, method: "chat.update", params: { channel: "C0TEST00001", ts: "55.5", text: "Dismiss" } });
+    expect(answer.status).toBe(403);
+    expect(JSON.parse(answer.body).error).toContain("message_not_allowed");
+    expect(seen).toHaveLength(0);
+    expect(logs.join("\n")).not.toContain("Dismiss");
+  });
+
+  test("a normal turn's chat.update of its own non-notice message still goes to Slack", async () => {
+    const { proxy, tickets, seen } = setup(undefined, lookup);
+    const ticket = tickets.issue({ channel: "C0TEST00001", threadTs: "1.1" });
+    const answer = await proxy.call({ ticket, method: "chat.update", params: { channel: "C0TEST00001", ts: "56.6", text: "progress 2/3" } });
+    expect(answer.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(String(seen[0]!.init.body)).toBe("channel=C0TEST00001&ts=56.6&text=progress+2%2F3");
+  });
+});
 
 describe("Slack proxy", () => {
   test("an allowed call is proxied with the bot's token, which the caller never supplied", async () => {

@@ -167,6 +167,20 @@ describe("learningsRepo", () => {
   });
 });
 
+describe("learningsRepo decide", () => {
+  test("settles once, and a decided learning can be flipped but not re-set to the same status", () => {
+    const repo = createLearningsRepo(db);
+    const l = repo.add("fact", "kai", 1, "pending");
+    expect(repo.decide(l.id, "active", "owner", 2)).toBe(true);
+    expect(repo.decide(l.id, "active", "owner", 3)).toBe(false);
+    expect(repo.decide(l.id, "rejected", "owner", 4)).toBe(true);
+    expect(repo.get(l.id)?.status).toBe("rejected");
+    expect(repo.decide(l.id, "active", "owner", 5)).toBe(true);
+    expect(repo.list().map((x) => x.id)).toEqual([l.id]);
+    expect(repo.decide(999, "active", "owner", 6)).toBe(false);
+  });
+});
+
 describe("messageRepo thread scoping", () => {
   test("recentForThread returns only that thread; recentForChannel still sees all", () => {
     const db = openDatabase(":memory:");
