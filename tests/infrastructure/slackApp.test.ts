@@ -532,7 +532,7 @@ describe("createHandler streaming truth table", () => {
     const tagged = build({ llm, streamUpdates: false });
     await tagged.handle({ ...tagged.msg(`<@UBOT> review ${PR}`), mentioned: true });
     expect(brainRan).toBe(0); // quick-review took it, not the chat brain
-    // the same words with no tag (a DM, a followed thread's reply) are chat
+    // the same words with no `mentioned` flag (an untagged DM, a followed thread's reply) are chat
     const untagged = build({ llm, streamUpdates: false });
     await untagged.handle(untagged.msg(`<@UBOT> review ${PR}`));
     expect(brainRan).toBe(1);

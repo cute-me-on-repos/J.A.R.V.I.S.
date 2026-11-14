@@ -79,7 +79,7 @@ import {
 import { rankOf as roleRank } from "../../domain/roles.ts";
 import { seededBook } from "../../domain/roleSeed.ts";
 import { decideAccess } from "../../domain/access.ts";
-import { reviewRequestIn } from "../../domain/reviewRequest.ts";
+import { opensWithBotTag, reviewRequestIn } from "../../domain/reviewRequest.ts";
 import { createFollowGate } from "../../application/followGate.ts";
 import { createGateModel } from "../../application/followGateModel.ts";
 import type { ToolPolicy } from "../../domain/toolPolicy.ts";
@@ -1909,6 +1909,13 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
       threadTs: threadKeyOf(m),
       messageTs: m.ts,
       client: asClient(client),
+      // Slack never sends `app_mention` for a DM, so a tag that opens the text
+      // is the only sign the bot was addressed - which `respond` needs before a
+      // spoken "review <pr>" may run. Only the bot's own tag counts, not every
+      // DM. A thread reply in a DM comes through here too (never `following`).
+      ...(opensWithBotTag(m.text!, await deps.slack?.botUserId().catch(ignoreQuietly("bot user id lookup")))
+        ? { mentioned: true }
+        : {}),
       say: say as Incoming["say"],
     });
   });

@@ -135,6 +135,27 @@ describe("respond", () => {
     }
   });
 
+  test("a DM tagged with review runs quick-review, a DM without the tag does not", async () => {
+    // Slack sends no app_mention for a DM, so the transport marks `mentioned`
+    // from the text; respond only sees the flag. Same for a thread reply in a DM.
+    for (const extra of [{}, { threadTs: "5.5" }]) {
+      const { deps, ran } = withBrain();
+      const res = await respond(deps, {
+        channelId: "D1",
+        slackUserId: OWNER,
+        text: `<@UBOT> review ${REVIEW_PR}`,
+        mentioned: true,
+        ...extra,
+      });
+      expect(ran.brain).toBe(false);
+      expect(res.kind === "reply" ? res.text : "").toContain("caller's own");
+    }
+    const { deps, ran } = withBrain();
+    const res = await respond(deps, { channelId: "D1", slackUserId: OWNER, text: `review ${REVIEW_PR}` });
+    expect(ran.brain).toBe(true);
+    expect(res.kind === "reply" ? res.text : "").not.toContain("caller's own");
+  });
+
   test("a pal, the lowest role, can tag the bot for a quick review too", async () => {
     const { deps, ran } = withBrain();
     deps.users.upsert({ slackId: "U0PAL0009", role: "pal", displayName: "Pal", addedBy: OWNER, createdAt: 1 });
@@ -161,7 +182,7 @@ describe("respond", () => {
   test("quick-review never starts from anything but a human's tag", async () => {
     const text = `<@UBOT> review ${REVIEW_PR}`;
     const cases: [string, Partial<Parameters<typeof respond>[1]>, string?][] = [
-      ["no tag (a DM or a followed thread's reply)", { mentioned: undefined }],
+      ["no tag (a DM without the bot's tag, or a followed thread's reply)", { mentioned: undefined }],
       ["an untagged follow-up", { mentioned: true, following: true }],
       ["a turn the bot started itself", { mentioned: true, unprompted: true }],
       ["a batch of buffered messages", { mentioned: true, batched: true }],

@@ -66,7 +66,8 @@ export const respond = async (
     // describe the token rather than offer the box that takes it. `!` is the
     // legacy trigger and needs no configured prefix, so this works the same
     // whether or not the instance set one.
-    // Only for a message a person tagged the bot in (`mentioned`), and never
+    // Only for a message a person tagged the bot in (`mentioned`: an
+    // `app_mention`, or a DM that opens with the bot's tag), and never
     // for anything the bot or a thread's own flow started: a turn the bot
     // began itself (`unprompted`: tell, a watch hand-back, a worker question,
     // a drift nudge) carries an internal steer, a batch is pieced together from
