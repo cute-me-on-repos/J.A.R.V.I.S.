@@ -112,8 +112,8 @@ export type SlackAdminPort = {
   /**
    * Edit one of the bot's own messages. Every post and edit below carries the
    * signature footer (domain/messageFooter.ts): `by` names who wrote it, plain
-   * Jarvis when left out, and the footer's "updated" time is the moment of the
-   * call.
+   * Jarvis when left out. Only an edit (`update`, `settleInteractive`) adds the
+   * footer's "updated" time, the moment of the call; a first post has none.
    */
   update: (channel: string, ts: string, text: string, by?: string) => Promise<void>;
   /** Delete one of the bot's own messages. */
