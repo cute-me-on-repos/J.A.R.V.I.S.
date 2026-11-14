@@ -78,6 +78,23 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
     footerLine(by ?? SIGNATURES.jarvis, clock(), usage ? usageFooter(usage) : undefined);
   let botUserId: string | undefined;
 
+  const settle = async (channel: string, ts: string, text: string, by?: string): Promise<void> => {
+    // Drop the buttons so a decided request cannot be clicked again.
+    await client.chat
+      .update({ channel, ts, ...signedText(text, footer(by)) })
+      // Refused: the text as unsigned sections (still no buttons), and
+      // failing that a text-only edit, so at least the words change.
+      .catch(() =>
+        client.chat.update({
+          channel,
+          ts,
+          text: text || " ",
+          blocks: sectionChunks(text).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } })),
+        }),
+      )
+      .catch(() => client.chat.update({ channel, ts, text }));
+  };
+
   const getBotUserId = async (): Promise<string> => {
     if (botUserId) return botUserId;
     const auth = (await client.auth.test()) as { user_id?: string };
@@ -401,21 +418,31 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       return posted.ts ? { channel, ts: posted.ts } : undefined;
     },
 
-    settleInteractive: async (channel, ts, text, by) => {
-      // Drop the buttons so a decided request cannot be clicked again.
+    settleInteractive: settle,
+
+    updateInteractive: async (channel, ts, text, actions, by) => {
+      // The decision shown, the buttons kept. Refused: settle it plainly, the decision is stored either way.
       await client.chat
-        .update({ channel, ts, ...signedText(text, footer(by)) })
-        // Refused: the text as unsigned sections (still no buttons), and
-        // failing that a text-only edit, so at least the words change.
-        .catch(() =>
-          client.chat.update({
-            channel,
-            ts,
-            text: text || " ",
-            blocks: sectionChunks(text).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } })),
-          }),
-        )
-        .catch(() => client.chat.update({ channel, ts, text }));
+        .update({
+          channel,
+          ts,
+          text: text || " ",
+          blocks: [
+            ...sectionChunks(text).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } })),
+            {
+              type: "actions",
+              elements: actions.map((a) => ({
+                type: "button",
+                action_id: a.actionId,
+                text: { type: "plain_text", text: a.label, emoji: true },
+                value: a.value,
+                ...(a.style ? { style: a.style } : {}),
+              })),
+            },
+            footerBlock(footer(by)),
+          ] as never,
+        })
+        .catch(() => settle(channel, ts, text, by));
     },
 
     addReactions: async (channel, ts, names) => {

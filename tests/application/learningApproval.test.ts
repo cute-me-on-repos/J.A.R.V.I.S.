@@ -99,7 +99,8 @@ describe("the owner decides", () => {
     expect(d.learnings!.list().map((l) => l.content)).toEqual([FACT]);
     expect(d.learnings!.pending()).toEqual([]);
     expect(promptOf(d)).toContain(FACT);
-    expect(slackCalls.settled.at(-1)?.text).toContain(`learning #${id} approved by <@${OWNER}>`);
+    expect(slackCalls.updated.at(-1)?.text).toContain(`learning #${id} approved by <@${OWNER}>`);
+    expect(slackCalls.settled).toEqual([]);
     expect(d.learnings!.get(id)).toMatchObject({ status: "active" });
   });
 
@@ -111,7 +112,7 @@ describe("the owner decides", () => {
     expect(d.learnings!.list()).toEqual([]);
     expect(injectedLearnings(d.learnings!)).toEqual([]);
     expect(promptOf(d)).not.toContain(FACT);
-    expect(slackCalls.settled.at(-1)?.text).toContain("rejected");
+    expect(slackCalls.updated.at(-1)?.text).toContain("rejected");
 
     expect(await run(d, actor(), `learn approve ${id}`)).toContain("already answered");
     expect(d.learnings!.list()).toEqual([]);
@@ -217,7 +218,7 @@ describe("the Approve / Reject buttons", () => {
     const { d, row, press } = await proposed();
     expect(await press()).toEqual({ kind: "approved", id: row.id });
     expect(injectedLearnings(d.learnings!)).toEqual([FACT]);
-    expect(slackCalls.settled.at(-1)).toMatchObject({ channel: row.noticeChannel, ts: row.noticeTs });
+    expect(slackCalls.updated.at(-1)).toMatchObject({ channel: row.noticeChannel, ts: row.noticeTs });
   });
 
   test("the owner's Reject keeps it out for good", async () => {
@@ -294,6 +295,102 @@ describe("the Approve / Reject buttons", () => {
     expect(await press({ actionId: "jv:learning:other" })).toEqual({ kind: "unknown" });
     expect(await press({ value: "999" })).toEqual({ kind: "unknown" });
     expect(d.learnings!.list()).toHaveLength(1);
+  });
+});
+
+describe("the notice keeps its buttons after a decision", () => {
+  const decided = async (first: "approve" | "reject") => {
+    const d = build();
+    await run(d, MEMBER, `learn ${FACT}`);
+    const row = d.learnings!.pending()[0]!;
+    const press = (action: "approve" | "reject", over: Partial<Parameters<typeof decideLearningPress>[1]> = {}) =>
+      decideLearningPress(d.learningApproval!, {
+        slackUserId: OWNER,
+        actionId: action === "approve" ? LEARNING_APPROVE_ACTION : LEARNING_REJECT_ACTION,
+        value: String(row.id),
+        channel: row.noticeChannel,
+        messageTs: row.noticeTs,
+        shown: [approvalText(row.id, FACT, MEMBER.slackId)],
+        ...over,
+      });
+    await press(first);
+    return { d, row, press };
+  };
+
+  test("approved: the pressed button says so and Reject stays pressable", async () => {
+    const { row } = await decided("approve");
+    expect(slackCalls.settled).toEqual([]);
+    expect(slackCalls.updated.at(-1)).toMatchObject({
+      channel: row.noticeChannel,
+      ts: row.noticeTs,
+      buttons: [`${LEARNING_APPROVE_ACTION}::white_check_mark: Approved by the owner`, `${LEARNING_REJECT_ACTION}:Reject`],
+    });
+  });
+
+  test("rejected: the pressed button says so and Approve stays pressable", async () => {
+    await decided("reject");
+    expect(slackCalls.updated.at(-1)?.buttons).toEqual([
+      `${LEARNING_APPROVE_ACTION}:Approve`,
+      `${LEARNING_REJECT_ACTION}::x: Rejected by the owner`,
+    ]);
+  });
+
+  test("approve then reject flips it back out of the prompt", async () => {
+    const { d, row, press } = await decided("approve");
+    expect(injectedLearnings(d.learnings!)).toEqual([FACT]);
+    // Slack may flag our own rewrite of the notice as edited
+    expect(await press("reject", { edited: true })).toEqual({ kind: "rejected", id: row.id });
+    expect(d.learnings!.get(row.id)?.status).toBe("rejected");
+    expect(injectedLearnings(d.learnings!)).toEqual([]);
+    expect(slackCalls.updated.at(-1)?.buttons[1]).toContain("Rejected by");
+  });
+
+  test("reject then approve activates it", async () => {
+    const { d, row, press } = await decided("reject");
+    expect(injectedLearnings(d.learnings!)).toEqual([]);
+    expect(await press("approve")).toEqual({ kind: "approved", id: row.id });
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+    expect(injectedLearnings(d.learnings!)).toEqual([FACT]);
+    expect(slackCalls.updated.at(-1)?.buttons[0]).toContain("Approved by");
+  });
+
+  test("pressing the decision already made changes nothing", async () => {
+    const { d, row, press } = await decided("approve");
+    const rewrites = slackCalls.updated.length;
+    expect(await press("approve")).toEqual({ kind: "refused", why: "decided", id: row.id });
+    expect(slackCalls.updated).toHaveLength(rewrites);
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+  });
+
+  test("a non-owner cannot flip a decided learning", async () => {
+    const { d, row, press } = await decided("approve");
+    expect(await press("reject", { slackUserId: MEMBER.slackId })).toEqual({ kind: "refused", why: "not-owner", id: row.id });
+    expect(await press("reject", { slackUserId: ADMIN.slackId })).toMatchObject({ why: "not-owner" });
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+    expect(injectedLearnings(d.learnings!)).toEqual([FACT]);
+  });
+
+  test("a flip from another message or one that no longer shows the fact is forged", async () => {
+    const { d, row, press } = await decided("approve");
+    expect(await press("reject", { messageTs: "999.999" })).toEqual({ kind: "refused", why: "forged", id: row.id });
+    expect(await press("reject", { channel: "C0TEST0001" })).toMatchObject({ why: "forged" });
+    expect(await press("reject", { shown: [] })).toMatchObject({ why: "forged" });
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+  });
+
+  test("the typed command still cannot reopen a decided learning", async () => {
+    const { d, row } = await decided("approve");
+    expect(await run(d, actor(), `learn reject ${row.id}`)).toContain("already answered");
+    expect(d.learnings!.get(row.id)?.status).toBe("active");
+  });
+
+  test("a port without updateInteractive settles the notice as before", async () => {
+    const d = build();
+    delete (d.slack as { updateInteractive?: unknown }).updateInteractive;
+    await run(d, MEMBER, `learn ${FACT}`);
+    const { id } = d.learnings!.pending()[0]!;
+    await run(d, actor(), `learn approve ${id}`);
+    expect(slackCalls.settled.at(-1)?.text).toContain("approved");
   });
 });
 
@@ -435,11 +532,13 @@ describe("the storage", () => {
     expect(repo.pending().map((l) => l.content)).toEqual(["pending one"]);
     expect(repo.get(r.id)?.status).toBe("rejected");
     expect(repo.get(a.id)?.status).toBe("active");
-    // a decision is made once, and only on a pending row
-    expect(repo.decide(a.id, "rejected", OWNER, 5)).toBe(false);
-    expect(repo.decide(r.id, "active", OWNER, 5)).toBe(false);
+    // the same decision twice changes nothing; the other one flips it
+    expect(repo.decide(r.id, "rejected", OWNER, 5)).toBe(false);
     expect(repo.decide(p.id, "active", OWNER, 5)).toBe(true);
+    expect(repo.decide(p.id, "active", OWNER, 6)).toBe(false);
     expect(repo.list().map((l) => l.content)).toEqual(["active one", "pending one"]);
+    expect(repo.decide(a.id, "rejected", OWNER, 7)).toBe(true);
+    expect(repo.list().map((l) => l.content)).toEqual(["pending one"]);
     expect(repo.decide(999, "active", OWNER, 5)).toBe(false);
   });
 
@@ -517,7 +616,7 @@ describe("where the notice goes", () => {
       shown: [approvalText(row.id, FACT, AGENT_SOURCE)],
     });
     expect(out).toEqual({ kind: "approved", id: row.id });
-    expect(slackCalls.settled.at(-1)).toMatchObject({ channel: OWNER_DM, ts: row.noticeTs });
+    expect(slackCalls.updated.at(-1)).toMatchObject({ channel: OWNER_DM, ts: row.noticeTs });
   });
 
   test("a thread the owner started in a channel: the notice is posted there", async () => {

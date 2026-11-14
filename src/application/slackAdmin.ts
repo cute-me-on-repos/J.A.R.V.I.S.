@@ -176,6 +176,18 @@ export type SlackAdminPort = {
   ) => Promise<PostedRef | undefined>;
   /** Replace an interactive message's buttons with settled text. */
   settleInteractive: (channel: string, ts: string, text: string, by?: string) => Promise<void>;
+  /**
+   * Rewrite an interactive message to `text` and keep `actions` as its buttons
+   * (a decided notice that can still be flipped). `settleInteractive` is for
+   * everything that must not be pressed again; this is not.
+   */
+  updateInteractive?: (
+    channel: string,
+    ts: string,
+    text: string,
+    actions: readonly InteractiveAction[],
+    by?: string,
+  ) => Promise<void>;
   /** Add reactions to a message (tolerant of already-reacted / invalid names). Returns how many landed. */
   addReactions: (channel: string, ts: string, names: readonly string[]) => Promise<number>;
   /** The bot's own Slack user id, so it can recognise itself being tagged. */

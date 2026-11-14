@@ -31,7 +31,7 @@ import { SIGNATURES } from "../domain/messageFooter.ts";
 import type { Learning } from "../domain/types.ts";
 import type { LearningsRepo } from "../infrastructure/db/learningsRepo.ts";
 import type { Clock } from "./ports.ts";
-import type { SlackAdminPort } from "./slackAdmin.ts";
+import type { InteractiveAction, SlackAdminPort } from "./slackAdmin.ts";
 import { logAndIgnore } from "./ignoredError.ts";
 
 /** Pending learnings at once: past this, new ones are refused so the owner's DMs cannot be flooded. */
@@ -163,31 +163,71 @@ export type DecideResult =
   | { readonly kind: "failed"; readonly violations: readonly string[] }
   | { readonly kind: "refused"; readonly why: DecisionRefusal };
 
-const settle = (deps: LearningApprovalDeps, l: Learning, text: string): Promise<void> | undefined =>
-  l.noticeChannel && l.noticeTs
-    ? deps.slack?.settleInteractive(l.noticeChannel, l.noticeTs, text, SIGNATURES.learning).catch(logAndIgnore("learning approval settle"))
-    : undefined;
+/**
+ * The buttons a decided notice keeps: both stay, the pressed one relabelled with
+ * who decided (a button's text is plain, so a name and never a mention), the
+ * other still pressable to flip the decision. `canFlip` is false for an approval
+ * filed into the adapter: its row is gone, so there is nothing left to reject.
+ */
+const decidedActions = (id: number, decision: "approve" | "reject", who: string, canFlip: boolean): InteractiveAction[] => {
+  const approved = decision === "approve";
+  const done: InteractiveAction = approved
+    ? { actionId: LEARNING_APPROVE_ACTION, label: `:white_check_mark: Approved by ${who}`, value: String(id), style: "primary" }
+    : { actionId: LEARNING_REJECT_ACTION, label: `:x: Rejected by ${who}`, value: String(id), style: "danger" };
+  const other: InteractiveAction = approved
+    ? { actionId: LEARNING_REJECT_ACTION, label: "Reject", value: String(id), style: "danger" }
+    : { actionId: LEARNING_APPROVE_ACTION, label: "Approve", value: String(id), style: "primary" };
+  if (!canFlip) return [done];
+  return approved ? [done, other] : [other, done];
+};
+
+/** Rewrite the learning's notice to show the decision and keep the buttons; a port without `updateInteractive` settles it plainly. */
+const settle = async (
+  deps: LearningApprovalDeps,
+  l: Learning,
+  decision: "approve" | "reject",
+  by: string,
+  canFlip: boolean,
+): Promise<void> => {
+  if (!l.noticeChannel || !l.noticeTs || !deps.slack) return;
+  const text = settledText(decision === "approve" ? "approved" : "rejected", l.id, l.content, by);
+  const { noticeChannel: channel, noticeTs: ts } = l;
+  if (!deps.slack.updateInteractive) {
+    await deps.slack.settleInteractive(channel, ts, text, SIGNATURES.learning).catch(logAndIgnore("learning approval settle"));
+    return;
+  }
+  const names = await deps.slack.resolveNames?.([by]).catch(logAndIgnore("learning decider name"));
+  const who = (names?.[by] ?? "").trim() || "the owner";
+  await deps.slack
+    .updateInteractive(channel, ts, text, decidedActions(l.id, decision, who.slice(0, 40), canFlip), SIGNATURES.learning)
+    .catch(logAndIgnore("learning approval settle"));
+};
 
 /**
  * Apply the owner's decision to a pending learning. The caller has already
  * checked WHO decided (the command's role, the button's user); this checks
  * only the learning, and claims it once, so a double press changes nothing.
+ * `flip` (a press on the kept button of an answered notice) also takes a
+ * learning already decided the other way; the typed `learn approve|reject`
+ * stays pending-only.
  */
 export const decideLearning = async (
   deps: LearningApprovalDeps,
   id: number,
   decision: "approve" | "reject",
   by: string,
+  opts: { readonly flip?: boolean } = {},
 ): Promise<DecideResult> => {
   const l = deps.learnings.get(id);
   if (!l) return { kind: "refused", why: "unknown" };
-  if (l.status !== "pending") return { kind: "refused", why: "decided" };
+  const target = decision === "approve" ? "active" : "rejected";
+  if (opts.flip ? l.status === target : l.status !== "pending") return { kind: "refused", why: "decided" };
   const now = deps.clock();
 
   if (decision === "reject") {
     if (!deps.learnings.decide(id, "rejected", by, now)) return { kind: "refused", why: "decided" };
     deps.log?.(`learning #${id} rejected by ${by}`);
-    await settle(deps, l, settledText("rejected", id, l.content, by));
+    await settle(deps, l, "reject", by, true);
     return { kind: "rejected", learning: l, warnings: [] };
   }
 
@@ -204,7 +244,7 @@ export const decideLearning = async (
   // The adapter holds it now and is what the prompt reads; the row would only be a second copy.
   if (adapter) deps.learnings.remove(id);
   deps.log?.(`learning #${id} approved by ${by}`);
-  await settle(deps, l, settledText("approved", id, l.content, by));
+  await settle(deps, l, "approve", by, !adapter);
   return { kind: "approved", learning: l, warnings };
 };
 
@@ -215,8 +255,9 @@ export type PressOutcome =
   | { readonly kind: "unknown" };
 
 /**
- * An Approve or Reject press. Only the owner counts, and only on the DM this
- * learning was posted with, never edited since: a turn can post its own
+ * An Approve or Reject press, also on a notice already answered (the other
+ * button flips the decision). Only the owner counts, and only on the message this
+ * learning was posted with, never edited by anyone else: a turn can post its own
  * `jv:learning:approve` button anywhere, or `chat.update` its own DM so the
  * owner approves a different fact than the one stored.
  */
@@ -243,12 +284,13 @@ export const decideLearningPress = async (
   const shown = (press.shown ?? []).join("\n");
   const showsTheFact = shown.includes(core) || shown.includes(`&gt; ${core.slice(2)}`);
   const fromTheDm = !!l.noticeChannel && !!l.noticeTs && press.channel === l.noticeChannel && press.messageTs === l.noticeTs;
-  if (!fromTheDm || press.edited || !showsTheFact) {
+  // Once decided, the notice is our own chat.update, which Slack may flag as edited: the fact on show still has to match.
+  if (!fromTheDm || (press.edited && l.status === "pending") || !showsTheFact) {
     deps.log?.(`learning #${l.id} press refused: not the untouched approval DM`);
     return { kind: "refused", why: "forged", id: l.id };
   }
   if (press.slackUserId !== deps.ownerSlackId) return { kind: "refused", why: "not-owner", id: l.id };
-  const r = await decideLearning(deps, l.id, press.actionId === LEARNING_APPROVE_ACTION ? "approve" : "reject", press.slackUserId);
+  const r = await decideLearning(deps, l.id, press.actionId === LEARNING_APPROVE_ACTION ? "approve" : "reject", press.slackUserId, { flip: true });
   return r.kind === "refused"
     ? { kind: "refused", why: r.why, id: l.id }
     : r.kind === "failed"

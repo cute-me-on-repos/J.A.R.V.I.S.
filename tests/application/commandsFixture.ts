@@ -31,6 +31,8 @@ export type SlackCalls = {
   removed: { channel: string; ts: string }[];
   buttons: string[];
   settled: { channel: string; ts: string; text: string }[];
+  /** `updateInteractive`: a notice rewritten with its buttons kept, as `actionId:label`. */
+  updated: { channel: string; ts: string; text: string; buttons: string[] }[];
   removeError?: Error;
 };
 
@@ -63,6 +65,9 @@ export const fakeSlack = (calls: SlackCalls, thread: SlackMessage[] = []): Slack
   postMenu: async () => undefined,
   settleInteractive: async (channel, ts, text) => {
     calls.settled.push({ channel, ts, text });
+  },
+  updateInteractive: async (channel, ts, text, actions) => {
+    calls.updated.push({ channel, ts, text, buttons: actions.map((a) => `${a.actionId}:${a.label}`) });
   },
   addReactions: async (_c, _ts, names) => {
     calls.reactions.push(...names);
@@ -101,7 +106,7 @@ export const everyoneHasToken = (): ClaudeTokenPort => ({
 
 export const build = (thread: SlackMessage[] = [threadMsg("hi there")]): CommandDeps => {
   db = openDatabase(":memory:");
-  slackCalls = { posts: [], reactions: [], removed: [], buttons: [], settled: [] };
+  slackCalls = { posts: [], reactions: [], removed: [], buttons: [], settled: [], updated: [] };
   const deps: CommandDeps = {
     users: createUserRepo(db),
     messages: createMessageRepo(db),

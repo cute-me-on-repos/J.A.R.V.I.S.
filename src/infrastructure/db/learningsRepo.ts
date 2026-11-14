@@ -50,7 +50,7 @@ export type LearningsRepo = {
   update: (id: number, content: string, status: LearningStatus) => void;
   /** Where the owner's Approve / Reject message for a pending learning lives. */
   setNotice: (id: number, channel: string, ts: string) => void;
-  /** Settle a PENDING learning, once: false when it was not pending (already decided, or gone). */
+  /** Set the learning's status once: false when it already has it (a double press) or is gone. A decided one can be flipped. */
   decide: (id: number, status: "active" | "rejected", by: string, at: number) => boolean;
   remove: (id: number) => void;
 };
@@ -79,7 +79,7 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
   );
   const decideStmt = db.query(
     `UPDATE learnings SET status = $status, decided_by = $by, decided_at = $at
-      WHERE id = $id AND status = 'pending'`,
+      WHERE id = $id AND status != $status`,
   );
   const removeStmt = db.query("DELETE FROM learnings WHERE id = $id");
 
