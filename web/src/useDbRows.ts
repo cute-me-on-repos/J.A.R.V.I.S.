@@ -75,8 +75,10 @@ export function useDbRows(channel: string, thread: string, ready: boolean, since
       if (state.current?.key !== key) return;
       setRows((cur) => ({ internal: r.internal ? mergeRows(cur.internal, r.internal) : cur.internal, turns: r.turns ? mergeRows(cur.turns, r.turns) : cur.turns }));
       if (r.error) setError(r.error);
+      // A window that failed to read is a gap: hand it back so the next trigger (a refresh) reads it again.
+      if (!r.internal || !r.turns) st.low = Math.max(st.low ?? before, before);
     });
-  }, [key, since, loaded, channel, thread]);
+  }, [key, since, loaded, channel, thread, tick]);
 
   return { internal: rows.internal, turns: rows.turns, loaded, error };
 }

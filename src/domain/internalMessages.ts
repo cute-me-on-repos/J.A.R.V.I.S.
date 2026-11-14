@@ -167,17 +167,27 @@ export type DbTurn = {
 export const OPENING_LETTERS = 32;
 
 /**
- * The letters and digits of a text's opening with link targets dropped: `[label](url)` (what the
- * bot stores) and `<url|label>` / `<url>` (what Slack shows) both leave just `label`, so the two compare equal.
+ * The letters and digits of a text with the parts Slack rewrites left out, so the
+ * bot's stored reply and the message Slack shows compare equal. Link targets go
+ * (`[label](url)` stored, `<url|label>` / `<url>` shown, both leave `label` or
+ * nothing), `&amp; &lt; &gt;` are decoded (Slack escapes them, the store has the
+ * plain characters - which are not letters either way), and bare urls go.
+ * `web/src/deletedTurns.ts` holds the same steps for the Slack side: change both together.
  */
-export const openingOf = (text: string): string =>
+export const lettersOf = (text: string): string =>
   text
     .replace(/\[([^\]]*)\]\([^)\s]*\)/g, "$1")
     .replace(/<[^<>|\s]+\|([^<>]*)>/g, "$1")
     .replace(/<(?:https?:|mailto:)[^<>\s]*>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/https?:\/\/\S+/g, "")
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, "")
-    .slice(0, OPENING_LETTERS);
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+
+/** A reply's opening: the first `OPENING_LETTERS` of `lettersOf`. */
+export const openingOf = (text: string): string => lettersOf(text).slice(0, OPENING_LETTERS);
 
 /**
  * A stored turn as the DB copy of a message; undefined when it was never a

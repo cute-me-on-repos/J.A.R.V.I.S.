@@ -46,6 +46,18 @@ describe("deleted on Slack", () => {
     expect(deletedOnSlack([slack("6.0", "xoxb-1234567890-abcdefghij is the token you asked for, keep it safe please", true)], [secret])).toEqual([]);
   });
 
+  test("an opening with &, -> or a bare url matches Slack's escaped text", () => {
+    const cases: [string, string][] = [
+      ["Q&A is over, the notes are posted in the doc now", "Q&amp;A is over, the notes are posted in the doc now"],
+      ["build -> deploy -> verify went through without a hitch", "build -&gt; deploy -&gt; verify went through without a hitch"],
+      ["https://x.dev/run/1 finished green and the logs are clean", "<https://x.dev/run/1> finished green and the logs are clean"],
+      ["see https://x.dev/a?q=1&b=2 for the details of the run", "see <https://x.dev/a?q=1&amp;b=2> for the details of the run"],
+    ];
+    for (const [stored, shown] of cases) {
+      expect(deletedOnSlack([slack("5.0", `${shown}\n_Jarvis_`, true)], [turn({ id: "r", role: "assistant", text: stored })])).toEqual([]);
+    }
+  });
+
   test("a reply stored just after the page edge is not judged: its Slack message may be on the page before", () => {
     const since = 1_000_000;
     const edge = turn({ id: "e", role: "assistant", text: "a long answer that took minutes to stream", at: since + 60_000 });

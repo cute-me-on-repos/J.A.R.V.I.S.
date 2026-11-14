@@ -117,6 +117,9 @@ describe("turnToDbTurn: the DB copy of a message", () => {
   test("a reply's opening is letters only, link targets dropped, taken before redaction", () => {
     expect(openingOf("[the run](https://x.dev/r) is **done**, see <https://y.dev> now")).toBe("therunisdoneseenow");
     expect(openingOf("<https://x.dev/r|the run> is *done*, see now")).toBe("therunisdoneseenow");
+    expect(openingOf("Q&A and build -> deploy")).toBe("qaandbuilddeploy");
+    expect(openingOf("Q&amp;A and build -&gt; deploy")).toBe("qaandbuilddeploy");
+    expect(openingOf("https://x.dev/a now")).toBe("now");
     expect(openingOf("a".repeat(100))).toHaveLength(32);
     expect(turnToDbTurn(stored({ role: "assistant", content: "xoxb-1234567890-abcdefghij here" }))).toMatchObject({ text: "[redacted] here", opening: "xoxb1234567890abcdefghijhere".slice(0, 32) });
     expect(turnToDbTurn(stored({ content: "a person" }))!.opening).toBe("");

@@ -21,3 +21,11 @@ export const parseConsolePath = (splat: string | undefined): ConsoleLocation => 
 /** The url of a channel, or of one thread in it. */
 export const consolePath = (channel: string, thread?: string): string =>
   !channel ? "/console" : thread ? `/console/${encodeURIComponent(channel)}/${encodeURIComponent(thread)}` : `/console/${encodeURIComponent(channel)}`;
+
+/**
+ * Whether data that was loaded for one view belongs to the view now on screen.
+ * State from the view just left is still around for one render after the
+ * address changes, so anything seeded from it (a time window, a cursor) must be
+ * gated on this, never on "something is loaded".
+ */
+export const loadedFor = (loaded: string, channel: string, thread = ""): boolean => !!channel && loaded === `${channel}/${thread}`;

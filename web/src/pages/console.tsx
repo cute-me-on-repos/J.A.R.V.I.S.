@@ -18,7 +18,7 @@ import { InternalRow } from "../internalMessages.tsx";
 import { DeletedRow } from "../deletedMessages.tsx";
 import { mergeTimeline, oldestOnScreen, pickInternal, type InternalMessage } from "../internalTimeline.ts";
 import { deletedOnSlack, type DbTurn } from "../deletedTurns.ts";
-import { consolePath, parseConsolePath } from "../consoleNav.ts";
+import { consolePath, loadedFor, parseConsolePath } from "../consoleNav.ts";
 import { KIND_LEGEND, slackKind } from "../consoleKinds.ts";
 import { loadedBelow, prependOlder, replaceNewest } from "../pageMerge.ts";
 import { useDbRows } from "../useDbRows.ts";
@@ -108,7 +108,9 @@ export function ConsolePage() {
   const [convoFilter, setConvoFilter] = useState("");
   const [messages, setMessages] = useState<SlackMessage[]>([]);
   const [cursor, setCursor] = useState<string | undefined>();
-  const [historyLoaded, setHistoryLoaded] = useState(false);
+  /** The view (`channel/`) the history above belongs to: after an address change the old messages linger one render, and nothing may be seeded from them. */
+  const [historyFor, setHistoryFor] = useState("");
+  const historyLoaded = loadedFor(historyFor, channel);
   /** Which view an older-page request is running for (`channel/thread`), so the channel's and a thread's never block each other. */
   const [olderFor, setOlderFor] = useState("");
   /** Display only: a view is still arriving. Never disables a button, so a request that is dropped cannot lock the page. */
@@ -228,7 +230,7 @@ export function ConsolePage() {
   useEffect(() => {
     setMessages([]);
     setCursor(undefined);
-    setHistoryLoaded(false);
+    setHistoryFor("");
     setMemThreads([]);
     setEditing(null);
     setError("");
@@ -240,7 +242,7 @@ export function ConsolePage() {
         if (stale) return;
         setMessages(page.messages);
         setCursor(page.nextCursor);
-        setHistoryLoaded(true);
+        setHistoryFor(`${channel}/`);
       })
       .catch((e: unknown) => {
         if (!stale) setError(errText(e));
@@ -303,7 +305,7 @@ export function ConsolePage() {
   }, [channel, threadRoot]);
 
   const threadSince = thread ? oldestOnScreen(thread.messages, thread.hasMore) : undefined;
-  const threadDb = useDbRows(channel, threadRoot, !!thread, threadSince, dbTick);
+  const threadDb = useDbRows(channel, threadRoot, !!thread && thread.root === threadRoot, threadSince, dbTick);
   const threadInternal = threadDb.internal;
   const threadTurns = threadDb.turns;
   const internalError = db.error || threadDb.error;
@@ -452,7 +454,7 @@ export function ConsolePage() {
   const threadDeleted = useMemo(() => (thread ? deletedOnSlack(thread.messages, threadTurns, threadSince) : []), [thread, threadTurns, threadSince]);
 
   // The page is whole when its Slack messages and DB rows are all in; names are then asked for once.
-  const ready = historyLoaded && db.loaded && (!threadRoot || (!!thread && threadDb.loaded));
+  const ready = historyLoaded && db.loaded && (!threadRoot || (thread?.root === threadRoot && threadDb.loaded));
   const slackNames = useSlackNames(
     [
       ...[...messages, ...(thread?.messages ?? [])].map((m) => m.text),

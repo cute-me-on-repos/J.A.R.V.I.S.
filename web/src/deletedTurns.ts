@@ -37,12 +37,16 @@ const tsMs = (ts: string): number => Number(ts) * 1000 || 0;
  */
 const EDGE_MARGIN_MS = 10 * 60_000;
 
-/** Letters and digits with link targets dropped - the same steps as the server's `openingOf`, whole rather than cut. */
-const letters = (s: string): string =>
+/** The letters of a text with what Slack rewrites left out: the same steps as the server's `lettersOf` (src/domain/internalMessages.ts) - change both together. */
+export const letters = (s: string): string =>
   s
     .replace(/\[([^\]]*)\]\([^)\s]*\)/g, "$1")
     .replace(/<[^<>|\s]+\|([^<>]*)>/g, "$1")
     .replace(/<(?:https?:|mailto:)[^<>\s]*>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/https?:\/\/\S+/g, "")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "");
 
