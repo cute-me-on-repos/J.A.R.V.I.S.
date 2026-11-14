@@ -112,6 +112,39 @@ export const migrate = (db: Database): void => {
   migrateJourneys(db);
   migrateLearningSource(db);
   migrateLearningNoticeFingerprint(db);
+  migrateBugReports(db);
+};
+
+/**
+ * Migration v41: bug reports the bot raised about itself.
+ *
+ * One row per `bug-report` the brain filed to the owner: what and where, the
+ * state of the owner's decision, and the DM it was asked in. `fingerprint`
+ * (thread + issue) is how the same report is not sent twice within a day. A
+ * new table, so a rerun is a no-op.
+ */
+const migrateBugReports = (db: Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bug_reports (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      fingerprint    TEXT NOT NULL,
+      thread_link    TEXT NOT NULL,
+      issue          TEXT NOT NULL,
+      summary        TEXT NOT NULL DEFAULT '',
+      plan           TEXT NOT NULL DEFAULT '',
+      state          TEXT NOT NULL DEFAULT 'pending',
+      reported_in    TEXT NOT NULL DEFAULT '',
+      notice_channel TEXT NOT NULL DEFAULT '',
+      notice_ts      TEXT NOT NULL DEFAULT '',
+      created_at     INTEGER NOT NULL,
+      decided_at     INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_bug_reports_fingerprint ON bug_reports (fingerprint, created_at DESC);");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 41) db.exec("PRAGMA user_version = 41;");
 };
 
 /**

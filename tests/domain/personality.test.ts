@@ -249,6 +249,17 @@ describe("buildSystemPrompt", () => {
     expect(buildSystemPrompt({ ...opts, runScript: undefined })).not.toContain("open a journey");
   });
 
+  test("a bug in itself goes to the owner through bug-report, and is not fixed unasked", () => {
+    const opts = { commandPrefix: "X/jarvis", runScript: "/bin/jarvis-run.sh", runUrl: "http://127.0.0.1:2002/api/commands/run", runTicket: "tkt" };
+    const p = buildSystemPrompt(opts);
+    expect(p).toContain("X/jarvis bug-report --thread <slack link of this thread>");
+    expect(p).toContain("bug in YOURSELF");
+    expect(p).toContain("owner was asked");
+    expect(p).toContain("wait for the owner's approve, except when the owner asked for the fix in that same conversation");
+    expect(p).toContain("jv:bug-report:approve");
+    expect(buildSystemPrompt({ ...opts, runScript: undefined })).not.toContain("bug-report");
+  });
+
   test("a named command is run, never reimplemented by hand", () => {
     const p = buildSystemPrompt({
       commandPrefix: "X/jarvis",

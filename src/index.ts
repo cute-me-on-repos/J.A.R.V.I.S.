@@ -48,6 +48,7 @@ import { createTurnLogRepo } from "./infrastructure/db/turnLogRepo.ts";
 import { createWatchRepo } from "./infrastructure/db/watchRepo.ts";
 import { createReminderRepo } from "./infrastructure/db/reminderRepo.ts";
 import { createJourneyRepo } from "./infrastructure/db/journeyRepo.ts";
+import { createBugReportRepo } from "./infrastructure/db/bugReportRepo.ts";
 import { createLoopRepo } from "./infrastructure/db/loopRepo.ts";
 import { createFollowRepo } from "./infrastructure/db/followRepo.ts";
 import { createKitViewRepo } from "./infrastructure/db/kitViewRepo.ts";
@@ -239,6 +240,7 @@ const main = async () => {
   const workerUsageRepo = createWorkerUsageRepo(db);
   const reminders = createReminderRepo(db);
   const journeys = createJourneyRepo(db);
+  const bugReports = createBugReportRepo(db);
   const loops = createLoopRepo(db);
   const follows = createFollowRepo(db);
   const kitViews = createKitViewRepo(db);
@@ -633,6 +635,7 @@ const main = async () => {
     follows,
     reminders,
     journeys,
+    bugReports,
     loops,
     loopApproval,
     learningApproval,

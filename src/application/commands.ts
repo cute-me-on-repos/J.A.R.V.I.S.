@@ -41,6 +41,7 @@ import { PEOPLE_COMMANDS } from "./commands/people.ts";
 import { ADAPTER_COMMANDS } from "./commands/adapter.ts";
 import { LEARNINGS_COMMANDS } from "./commands/learnings.ts";
 import { JOURNEY_COMMANDS } from "./commands/journeys.ts";
+import { BUG_REPORT_COMMANDS } from "./commands/bugReport.ts";
 import { ERRANDS_COMMANDS } from "./commands/errands.ts";
 import { REVIEW_COMMANDS } from "./commands/review.ts";
 import { RUNTIME_COMMANDS } from "./commands/runtime.ts";
@@ -115,6 +116,7 @@ export const COMMANDS: readonly CommandDef[] = [
   ...ADAPTER_COMMANDS,
   ...LEARNINGS_COMMANDS,
   ...JOURNEY_COMMANDS,
+  ...BUG_REPORT_COMMANDS,
   ...ERRANDS_COMMANDS,
   ...REVIEW_COMMANDS,
   ...RUNTIME_COMMANDS,
