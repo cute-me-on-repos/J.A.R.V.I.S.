@@ -12,6 +12,9 @@
 #
 # Typecheck and tests both have to pass. Restarting into code that does not
 # compile means crash-looping every fifteen seconds with no way back from Slack.
+# The dashboard bundle (web/dist) is rebuilt too: it is not committed and the
+# bot serves it as built, so a stale one breaks every page whose API changed.
+# --check-only builds it into a throwaway folder, leaving the live one alone.
 set -uo pipefail
 
 REPO=${JARVIS_REPO:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -31,8 +34,23 @@ if ! bun test; then
 fi
 
 if [ "${1:-}" = "--check-only" ]; then
+  echo "== dashboard build (throwaway, --check-only)"
+  out_dir=$(mktemp -d "${TMPDIR:-/tmp}/jarvis-web.XXXXXX")
+  (cd web && bun install && bun x vite build --outDir "$out_dir" --emptyOutDir)
+  built=$?
+  rm -rf "$out_dir"
+  if [ "$built" -ne 0 ]; then
+    echo "dashboard build failed" >&2
+    exit 1
+  fi
   echo "checks passed; not restarting (--check-only)"
   exit 0
+fi
+
+echo "== dashboard build"
+if ! bun run build:web; then
+  echo "REFUSING TO RESTART: dashboard build failed" >&2
+  exit 1
 fi
 
 # The reason is shown to anyone who writes in while it waits, so name the
