@@ -44,6 +44,9 @@ export type ThreadSummary = {
   lastAt: number;
 };
 
+/** A time window over `created_at` (ms): `since` inclusive, `before` exclusive. Either may be left out. */
+export type TimeRange = { since?: number; before?: number };
+
 export type MessageRepo = {
   append: (message: NewMessage, createdAt: number) => StoredMessage;
   /** Recent turns for a channel, returned oldest-first. Every thread in it. */
@@ -58,7 +61,13 @@ export type MessageRepo = {
    * with one of `prefixes`, oldest-first: the console's hidden steer turns, found
    * without reading the whole history.
    */
-  userTurnsStartingWith: (channelId: string, prefixes: readonly string[], limit: number, threadTs?: string) => StoredMessage[];
+  userTurnsStartingWith: (channelId: string, prefixes: readonly string[], limit: number, threadTs?: string, range?: TimeRange) => StoredMessage[];
+  /**
+   * The newest `limit` turns (any role) of a channel - one thread when given, else only those outside a
+   * thread or opening one - written inside `range`, oldest-first: the DB copy the console lays over
+   * a Slack page to find what Slack no longer has.
+   */
+  turnsInRange: (channelId: string, limit: number, threadTs?: string, range?: TimeRange) => StoredMessage[];
   clearChannel: (channelId: string) => number;
   count: () => number;
   /** Distinct channels with a turn count, most-recently-active first. */
@@ -75,6 +84,10 @@ export type MessageRepo = {
 };
 
 export type EndedThread = { channelId: string; threadTs: string; lastAt: number; slackUserId: string };
+
+const rangeSql = (r?: TimeRange): string =>
+  `${r?.since === undefined ? "" : " AND created_at >= ?"}${r?.before === undefined ? "" : " AND created_at < ?"}`;
+const rangeArgs = (r?: TimeRange): number[] => [...(r?.since === undefined ? [] : [r.since]), ...(r?.before === undefined ? [] : [r.before])];
 
 export const createMessageRepo = (db: DbClient): MessageRepo => {
   const endedStmt = db.query<{ channel_id: string; thread_ts: string; created_at: number; user_id: string | null }, [number, number, number]>(
@@ -145,18 +158,31 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
       recentStmt.all(channelId, Math.max(0, limit)).map(toMessage),
     recentForThread: (channelId, threadTs, limit) =>
       recentThreadStmt.all(channelId, threadTs, Math.max(0, limit)).map(toMessage),
-    userTurnsStartingWith: (channelId, prefixes, limit, threadTs) => {
+    turnsInRange: (channelId, limit, threadTs, range) => {
+      if (limit <= 0) return [];
+      // A channel view has no thread: its own turns are those outside any thread, plus a thread's root message.
+      const scope = threadTs === undefined ? "(thread_ts = '' OR thread_ts = slack_ts)" : "thread_ts = ?";
+      const sql = `SELECT * FROM (
+         SELECT * FROM messages WHERE channel_id = ? AND ${scope}${rangeSql(range)}
+         ORDER BY id DESC LIMIT ?
+       ) ORDER BY id ASC`;
+      return db
+        .query<Row, (string | number)[]>(sql)
+        .all(channelId, ...(threadTs === undefined ? [] : [threadTs]), ...rangeArgs(range), limit)
+        .map(toMessage);
+    },
+    userTurnsStartingWith: (channelId, prefixes, limit, threadTs, range) => {
       if (prefixes.length === 0 || limit <= 0) return [];
       // Exact, case-sensitive prefix match (LIKE folds case, so a person typing "i stopped waiting" would take a slot). Nothing marks an internal turn in the row (it even carries a synthetic `slack_ts`), so a person typing a look-alike opening shows up too - accepted, the console is owner-only and read-only.
       const starts = prefixes.map(() => "substr(content, 1, length(?)) = ?").join(" OR ");
       const args = prefixes.flatMap((p) => [p, p]);
       const sql = `SELECT * FROM (
-         SELECT * FROM messages WHERE channel_id = ? AND role = 'user' AND (${starts})${threadTs === undefined ? "" : " AND thread_ts = ?"}
+         SELECT * FROM messages WHERE channel_id = ? AND role = 'user' AND (${starts})${threadTs === undefined ? "" : " AND thread_ts = ?"}${rangeSql(range)}
          ORDER BY id DESC LIMIT ?
        ) ORDER BY id ASC`;
       const rows = db
         .query<Row, (string | number)[]>(sql)
-        .all(channelId, ...args, ...(threadTs === undefined ? [] : [threadTs]), limit);
+        .all(channelId, ...args, ...(threadTs === undefined ? [] : [threadTs]), ...rangeArgs(range), limit);
       return rows.map(toMessage);
     },
     clearChannel: (channelId) => {

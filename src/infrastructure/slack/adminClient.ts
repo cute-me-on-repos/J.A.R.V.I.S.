@@ -62,6 +62,9 @@ const MENTION = (botId: string) => new RegExp(`<@${botId}(?:\\|[^>]+)?>`);
 /** Recency is enriched via one history call per conversation; keep it bounded. */
 const RECENCY_CAP = 15;
 const RECENCY_CONCURRENCY = 4;
+/** A thread is read up to this many pages of this size (a runaway guard: 2000 replies). */
+const REPLY_PAGES = 10;
+const REPLY_PAGE_SIZE = 200;
 
 /** Run `fn` over `items` in sequential batches of `n` to avoid API bursts. */
 const mapPool = async <T, R>(items: T[], n: number, fn: (item: T) => Promise<R>): Promise<R[]> => {
@@ -167,6 +170,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       replyCount: m.reply_count ?? 0,
       threadTs: m.thread_ts,
       own: userId === botId,
+      ...(m.bot_id ? { bot: true } : {}),
       mentionsBot: botId ? MENTION(botId).test(text) : false,
       ...(m.files && m.files.length > 0
         ? {
@@ -224,8 +228,19 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
 
     replies: async (channel, threadTs) => {
       const botId = await getBotUserId();
-      const res = (await client.conversations.replies({ channel, ts: threadTs })) as { messages?: RawMessage[] };
-      return Promise.all((res.messages ?? []).map((m) => toMessage(m, botId)));
+      // Slack reads replies forward only, a page at a time: follow the cursor (capped) so the newest replies are in the result, not just the first page's oldest.
+      const raw: RawMessage[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < REPLY_PAGES; page++) {
+        const res = (await client.conversations.replies({ channel, ts: threadTs, limit: REPLY_PAGE_SIZE, ...(cursor ? { cursor } : {}) })) as {
+          messages?: RawMessage[];
+          response_metadata?: { next_cursor?: string };
+        };
+        raw.push(...(res.messages ?? []));
+        cursor = res.response_metadata?.next_cursor || undefined;
+        if (!cursor) break;
+      }
+      return Promise.all(raw.map((m) => toMessage(m, botId)));
     },
 
     permalink: async (channel, ts) => {
@@ -484,6 +499,30 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       };
       return {
         members: (res.members ?? []).filter((m) => m.id).map(toMember),
+        ...(res.response_metadata?.next_cursor ? { nextCursor: res.response_metadata.next_cursor } : {}),
+      };
+    },
+
+    listConversationPage: async (what, cursor) => {
+      const res = (await client.conversations.list({
+        types: what === "channels" ? "public_channel,private_channel" : "im",
+        exclude_archived: true,
+        limit: 200,
+        ...(cursor ? { cursor } : {}),
+      })) as { channels?: RawConversation[]; response_metadata?: { next_cursor?: string } };
+      return {
+        conversations: (res.channels ?? []).flatMap((c) =>
+          c.id
+            ? [
+                {
+                  id: c.id,
+                  name: c.name ?? "",
+                  kind: c.is_im ? ("im" as const) : c.is_private ? ("group" as const) : ("channel" as const),
+                  ...(c.user ? { userId: c.user } : {}),
+                },
+              ]
+            : [],
+        ),
         ...(res.response_metadata?.next_cursor ? { nextCursor: res.response_metadata.next_cursor } : {}),
       };
     },

@@ -82,7 +82,7 @@ const closer = (s: string, from: number, mark: string): number => {
   for (let j = from + 1; j < s.length; j++) {
     const c = s[j];
     if (c === "\n") return -1;
-    if (c === mark && j > from + 1 && !/\s/.test(s[j - 1]!) && !alnum(s[j + 1])) return j;
+    if (c === mark && j > from + 1 && !/\s/.test(s[j - 1]!) && !alnum(s[j + 1]) && !(mark === "_" && s[j + 1] === "_")) return j;
   }
   return -1;
 };
@@ -117,7 +117,7 @@ export const parseInline = (src: string): Inline[] => {
         i += m[0].length;
         continue;
       }
-    } else if (MARKS[c] && !alnum(before) && i + 1 < src.length && !/\s/.test(src[i + 1]!)) {
+    } else if (MARKS[c] && !alnum(before) && !(c === "_" && (before === "_" || src[i + 1] === "_")) && i + 1 < src.length && !/\s/.test(src[i + 1]!)) {
       const end = closer(src, i, c);
       if (end > 0) {
         flush();

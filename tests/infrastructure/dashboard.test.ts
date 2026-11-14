@@ -673,6 +673,75 @@ describe("paging, stats and the Slack directory over HTTP", () => {
     expect(res.items.map((i) => i.kind)).toEqual(["tell"]);
   });
 
+  test("memory/internal and memory/turns take a time window and a page size", async () => {
+    const { dash, messages } = build();
+    for (const at of [10, 20, 30]) messages.append({ channelId: "C1", slackUserId: "U9", role: "user", content: tellPrompt("U9", `n${at}`), threadTs: "7.1" }, at);
+    const internal = async (qs: string) => ((await (await dash.handle(api(`/api/memory/internal?channel=C1${qs}`))).json()) as { items: { at: number }[] }).items.map((i) => i.at);
+    expect(await internal("&since=20")).toEqual([20, 30]);
+    expect(await internal("&since=10&before=30")).toEqual([10, 20]);
+    expect(await internal("&limit=1")).toEqual([30]);
+    expect(await internal("&since=nonsense")).toEqual([10, 20, 30]);
+  });
+
+  test("memory/turns is the DB copy: ordinary turns only, redacted, scoped to channel or thread and a window, read-only", async () => {
+    const { dash, messages } = build();
+    const add = (role: "user" | "assistant", content: string, at: number, extra: { slackTs?: string; threadTs?: string; channelId?: string } = {}) =>
+      messages.append({ channelId: extra.channelId ?? "C1", slackUserId: role === "user" ? "U1" : "assistant", role, content, ...(extra.slackTs ? { slackTs: extra.slackTs } : {}), threadTs: extra.threadTs ?? "" }, at);
+    add("user", "asked a thing xoxb-1234567890-abcdefghij", 10, { slackTs: "1.5" });
+    add("assistant", "the answer", 11);
+    add("assistant", "NO_REPLY", 12);
+    add("user", tellPrompt("U9", "steer"), 13, { slackTs: "13.0" });
+    add("user", "in a thread", 14, { slackTs: "9.9", threadTs: "9.9" });
+    add("assistant", "thread answer", 15, { threadTs: "9.9" });
+    add("user", "elsewhere", 16, { channelId: "C2" });
+    const get = async (qs: string) => ((await (await dash.handle(api(`/api/memory/turns?${qs}`))).json()) as { items: { role: string; userId: string; text: string; ts: string; threadTs: string }[] }).items;
+    expect((await get("channel=C1")).map((t) => [t.role, t.text, t.ts])).toEqual([
+      ["user", "asked a thing [redacted]", "1.5"],
+      ["assistant", "the answer", ""],
+      ["user", "in a thread", "9.9"],
+    ]);
+    expect((await get("channel=C1&thread=9.9")).map((t) => t.text)).toEqual(["in a thread", "thread answer"]);
+    expect((await get("channel=C1&since=11&before=14")).map((t) => t.text)).toEqual(["the answer"]);
+    expect((await get("channel=C1")).map((t) => t.userId)).toEqual(["U1", "assistant", "U1"]);
+    expect((await dash.handle(api("/api/memory/turns"))).status).toBe(400);
+    expect((await dash.handle(api("/api/memory/turns?channel=C1&thread="))).status).toBe(400);
+    expect((await dash.handle(postJson("/api/memory/turns", { channel: "C1" }))).status).toBe(404);
+    expect(messages.count()).toBe(7);
+  });
+
+  test("slack/thread pages the replies: newest page first, `before` goes older, hasMore says so", async () => {
+    const replies = ["1.0", "2.0", "3.0", "4.0"].map((ts) => ({ ts }));
+    const slack = { replies: async () => replies } as unknown as NonNullable<DashboardDeps["slack"]>;
+    const { dash } = build({ slack });
+    const get = async (qs: string) => (await (await dash.handle(api(`/api/slack/thread?channel=C1&ts=1.0${qs}`))).json()) as { messages: { ts: string }[]; hasMore: boolean };
+    expect(await get("&limit=2")).toEqual({ messages: [{ ts: "3.0" }, { ts: "4.0" }], hasMore: true });
+    expect(await get("&limit=2&before=3.0")).toEqual({ messages: [{ ts: "1.0" }, { ts: "2.0" }], hasMore: false });
+    expect((await get("")).messages).toHaveLength(4);
+  });
+
+  test("slack/search finds channels and DMs the sidebar did not load, and says 503 without Slack", async () => {
+    expect((await build().dash.handle(api(`/api/slack/search?q=ops`))).status).toBe(503);
+    const slack = {
+      listMembers: async () => ({ members: [{ id: "U5", handle: "ann", realName: "Ann", displayName: "", title: "", email: "", avatar: "", deleted: false, isBot: false }] }),
+      listConversationPage: async (what: "channels" | "dms") =>
+        what === "channels"
+          ? { conversations: [{ id: "C7", name: "ops-late", kind: "channel" as const }] }
+          : { conversations: [{ id: "D5", name: "", kind: "im" as const, userId: "U5" }] },
+    } as unknown as NonNullable<DashboardDeps["slack"]>;
+    const { dash } = build({ slack });
+    const found = async (q: string) => ((await (await dash.handle(api(`/api/slack/search?q=${q}`))).json()) as { conversations: { id: string; name: string; kind: string; lastActive: number }[] }).conversations;
+    expect(await found("ops")).toEqual([{ id: "C7", name: "#ops-late", kind: "channel", lastActive: 0 }]);
+    expect((await found("ann")).map((c) => [c.id, c.name])).toEqual([["D5", "@Ann"]]);
+    expect(await found("")).toEqual([]);
+  });
+
+  test("slack/search answers empty when the port cannot list conversations, and 502 when Slack fails", async () => {
+    const bare = build({ slack: {} as unknown as NonNullable<DashboardDeps["slack"]> });
+    expect(await (await bare.dash.handle(api(`/api/slack/search?q=ops`))).json()).toEqual({ conversations: [] });
+    const slack = { listConversationPage: async () => { throw new Error("ratelimited"); } } as unknown as NonNullable<DashboardDeps["slack"]>;
+    expect((await build({ slack }).dash.handle(api(`/api/slack/search?q=ops`))).status).toBe(502);
+  });
+
   test("the retired conversation routes are gone", async () => {
     const { dash } = build();
     expect((await dash.handle(api(`/api/conversations`))).status).toBe(404);

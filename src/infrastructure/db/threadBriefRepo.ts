@@ -38,7 +38,7 @@ export type ThreadBriefRepo = {
   /** The newest briefs for this thread, read or not, oldest first. */
   recent: (channelId: string, threadTs: string, limit: number) => ThreadBrief[];
   /** The newest briefs written TO a channel (one thread when given), read or not, oldest first. */
-  toChannel: (channelId: string, limit: number, threadTs?: string) => ThreadBrief[];
+  toChannel: (channelId: string, limit: number, threadTs?: string, range?: { since?: number; before?: number }) => ThreadBrief[];
   /** Mark these read for this tier; ones already read keep their first time. */
   markRead: (ids: readonly number[], tier: string, now: number) => void;
   /** The opaque reference of a thread, as shown to the threads it briefs. */
@@ -89,9 +89,6 @@ export const createThreadBriefRepo = (db: DbClient): ThreadBriefRepo => {
   );
   const recentStmt = db.query<Row, [string, string, number]>(
     `SELECT * FROM (SELECT ${COLS} FROM thread_briefs b WHERE b.to_channel = ? AND b.to_thread = ? ORDER BY b.id DESC LIMIT ?) ORDER BY id`,
-  );
-  const toChannelStmt = db.query<Row, [string, number]>(
-    `SELECT * FROM (SELECT ${COLS} FROM thread_briefs b WHERE b.to_channel = ? ORDER BY b.id DESC LIMIT ?) ORDER BY id`,
   );
   const readStmt = db.query(
     "INSERT INTO thread_brief_reads (brief_id, tier, read_at) VALUES ($id, $tier, $now) ON CONFLICT(brief_id, tier) DO NOTHING",
@@ -149,11 +146,15 @@ export const createThreadBriefRepo = (db: DbClient): ThreadBriefRepo => {
     add: (brief, now) => addAll(brief, now),
     unread: (channelId, threadTs, tier) => unreadStmt.all(channelId, threadTs, tier).map(toBrief),
     recent: (channelId, threadTs, limit) => recentStmt.all(channelId, threadTs, Math.max(0, limit)).map(toBrief),
-    toChannel: (channelId, limit, threadTs) =>
-      (threadTs === undefined
-        ? toChannelStmt.all(channelId, Math.max(0, limit))
-        : recentStmt.all(channelId, threadTs, Math.max(0, limit))
-      ).map(toBrief),
+    toChannel: (channelId, limit, threadTs, range) => {
+      // The window is applied BEFORE the newest-N cut, so a window that ends before the newest briefs still finds its own.
+      const where = `b.to_channel = ?${threadTs === undefined ? "" : " AND b.to_thread = ?"}${range?.since === undefined ? "" : " AND b.created_at >= ?"}${range?.before === undefined ? "" : " AND b.created_at < ?"}`;
+      const args: (string | number)[] = [channelId, ...(threadTs === undefined ? [] : [threadTs]), ...(range?.since === undefined ? [] : [range.since]), ...(range?.before === undefined ? [] : [range.before]), Math.max(0, limit)];
+      return db
+        .query<Row, (string | number)[]>(`SELECT * FROM (SELECT ${COLS} FROM thread_briefs b WHERE ${where} ORDER BY b.id DESC LIMIT ?) ORDER BY id`)
+        .all(...args)
+        .map(toBrief);
+    },
     markRead: (ids, tier, now) => {
       if (ids.length > 0) markAll(ids, tier, now);
     },

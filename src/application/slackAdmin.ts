@@ -8,6 +8,7 @@
 import type { ConversationInfo } from "../domain/slackNames.ts";
 import type { FooterUsage } from "../domain/usageFooter.ts";
 import type { MemberPage } from "./slackDirectory.ts";
+import type { ConversationListPage } from "./conversationDirectory.ts";
 
 export type SlackConversation = {
   id: string;
@@ -35,6 +36,8 @@ export type SlackMessage = {
   threadTs?: string;
   /** authored by our own bot user (editable/deletable) */
   own: boolean;
+  /** posted by a bot or app (ours included - `own` tells ours apart) */
+  bot?: boolean;
   /** text @-mentions our bot */
   mentionsBot: boolean;
   /** Anything attached to the message: images, documents, snippets. */
@@ -212,6 +215,11 @@ export type SlackAdminPort = {
    * dashboard's name resolver caches. Undefined when Slack will not say.
    */
   conversationInfo?: (id: string) => Promise<ConversationInfo | undefined>;
+  /**
+   * One page of `conversations.list` (read-only): every public and private channel, or every DM,
+   * not just the page of memberships the sidebar lists. Feeds the console's search.
+   */
+  listConversationPage?: (what: "channels" | "dms", cursor?: string) => Promise<ConversationListPage>;
   /** One page of the workspace's members (`users.list`), deleted and bot accounts included. */
   listMembers?: (cursor?: string) => Promise<MemberPage>;
 };

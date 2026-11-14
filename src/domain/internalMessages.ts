@@ -17,7 +17,7 @@
  */
 import { DRIFT_NUDGE_MARK } from "./voiceDrift.ts";
 import { ORCA_QUESTION_TAG } from "./orcaQuestions.ts";
-import { TELL_PREFIX } from "./tellPrompt.ts";
+import { NO_REPLY, TELL_PREFIX } from "./tellPrompt.ts";
 import { redactSecrets } from "./toolVisibility.ts";
 
 export type InternalKind = "tell" | "brief" | "watch" | "nudge" | "orca" | "loop";
@@ -137,3 +137,75 @@ export const briefToInternal = (b: StoredBrief): InternalMessage => ({
 /** Oldest first, ties by id so the order never flickers between reloads. */
 export const sortInternal = (items: readonly InternalMessage[]): InternalMessage[] =>
   [...items].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+
+/** A stored turn with who wrote it and the Slack message it came from, as the DB copy of a conversation. */
+export type StoredFullTurn = StoredTurn & { readonly slackUserId: string; readonly slackTs?: string };
+
+/**
+ * One ordinary stored turn, for the console to lay over a Slack page and find
+ * what Slack no longer has. `ts` is the Slack message it came from ("" for the
+ * bot's own replies, which are not stored with one).
+ */
+export type DbTurn = {
+  readonly id: string;
+  readonly role: "user" | "assistant";
+  readonly userId: string;
+  /** Secrets redacted, clipped. */
+  readonly text: string;
+  readonly at: number;
+  readonly ts: string;
+  readonly threadTs: string;
+  /**
+   * The letters of the turn's opening, to find the bot's reply on a Slack page
+   * (replies carry no ts). Taken from the raw text, before redaction, and with
+   * link targets dropped the way Slack's mrkdwn conversion reorders them.
+   */
+  readonly opening: string;
+};
+
+/** How many letters of a reply's opening identify it. */
+export const OPENING_LETTERS = 32;
+
+/**
+ * The letters and digits of a text with the parts Slack rewrites left out, so the
+ * bot's stored reply and the message Slack shows compare equal. Link targets go
+ * (`[label](url)` stored, `<url|label>` / `<url>` shown, both leave `label` or
+ * nothing), `&amp; &lt; &gt;` are decoded (Slack escapes them, the store has the
+ * plain characters - which are not letters either way), and bare urls go.
+ * `web/src/deletedTurns.ts` holds the same steps for the Slack side: change both together.
+ */
+export const lettersOf = (text: string): string =>
+  text
+    .replace(/\[([^\]]*)\]\([^)\s]*\)/g, "$1")
+    .replace(/<[^<>|\s]+\|([^<>]*)>/g, "$1")
+    .replace(/<(?:https?:|mailto:)[^<>\s]*>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/https?:\/\/\S+/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+
+/** A reply's opening: the first `OPENING_LETTERS` of `lettersOf`. */
+export const openingOf = (text: string): string => lettersOf(text).slice(0, OPENING_LETTERS);
+
+/**
+ * A stored turn as the DB copy of a message; undefined when it was never a
+ * message anyone saw: a steer turn (those are `InternalMessage`s) or a
+ * `NO_REPLY` the bot chose not to post.
+ */
+export const turnToDbTurn = (m: StoredFullTurn): DbTurn | undefined => {
+  if (m.role !== "user" && m.role !== "assistant") return undefined;
+  if (m.role === "user" && classifyTurn(m.content)) return undefined;
+  if (m.role === "assistant" && m.content.trim() === NO_REPLY) return undefined;
+  return {
+    id: `turn:${m.id}`,
+    role: m.role,
+    userId: m.slackUserId,
+    text: clip(redactSecrets(m.content)),
+    at: m.createdAt,
+    ts: m.slackTs ?? "",
+    threadTs: m.threadTs ?? "",
+    opening: m.role === "assistant" ? openingOf(m.content) : "",
+  };
+};

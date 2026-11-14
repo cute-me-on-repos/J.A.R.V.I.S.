@@ -27,6 +27,8 @@ import type { RoleRepo } from "../db/roleRepo.ts";
 import type { StatsRepo } from "../db/statsRepo.ts";
 import type { ThreadSessionRepo } from "../db/threadSessionRepo.ts";
 import { createSlackDirectory } from "../../application/slackDirectory.ts";
+import { createConversationDirectory } from "../../application/conversationDirectory.ts";
+import { pageReplies } from "../../domain/messagePaging.ts";
 import { createNameResolver } from "../../application/nameResolver.ts";
 import type { SlackProxy } from "../../application/slackProxy.ts";
 import { ignoreQuietly } from "../../application/ignoredError.ts";
@@ -252,6 +254,10 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
     directory: deps.slack?.listMembers
       ? createSlackDirectory({ clock: deps.clock, listMembers: deps.slack.listMembers })
       : undefined,
+    // Same for the sidebar search over every channel and DM, not just the loaded page.
+    conversations: deps.slack?.listConversationPage
+      ? createConversationDirectory({ clock: deps.clock, listPage: deps.slack.listConversationPage })
+      : undefined,
     resolveNames: deps.slack ? (ids) => deps.slack!.resolveNames([...ids]) : undefined,
     roleRepo: deps.roleRepo,
     executerDbMcpServers: deps.executerDbMcpServers,
@@ -313,7 +319,11 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
         case "/api/memory/threads":
           return Response.json(app.memoryThreads(q("channel")));
         case "/api/memory/internal": {
-          const found = app.memoryInternal(q("channel"), q("thread") ?? undefined);
+          const found = app.memoryInternal(q("channel"), q("thread") ?? undefined, { since: q("since") ?? undefined, before: q("before") ?? undefined, limit: q("limit") ?? undefined });
+          return found.ok ? Response.json(found.value) : jsonError(found.error, found.status);
+        }
+        case "/api/memory/turns": {
+          const found = app.memoryTurns(q("channel"), q("thread") ?? undefined, { since: q("since") ?? undefined, before: q("before") ?? undefined, limit: q("limit") ?? undefined });
           return found.ok ? Response.json(found.value) : jsonError(found.error, found.status);
         }
         case "/api/stats":
@@ -331,8 +341,20 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           const cursor = q("cursor") || undefined;
           return slackGuard(() => deps.slack!.history(channel, limit, cursor));
         }
+        // A thread, newest `limit` replies older than `before` (a Slack ts): Slack reads replies forward only, so it is read whole and cut here.
         case "/api/slack/thread":
-          return slackGuard(() => deps.slack!.replies(q("channel") ?? "", q("ts") ?? ""));
+          return slackGuard(async () => {
+            const all = await deps.slack!.replies(q("channel") ?? "", q("ts") ?? "");
+            const limit = Math.min(200, Math.max(1, Number(q("limit")) || 50));
+            const page = pageReplies(all, limit, q("before") || undefined);
+            return { messages: page.messages, hasMore: page.hasMore };
+          });
+        // The sidebar filter, across every channel and DM (cached `conversations.list`), not only the loaded list.
+        case "/api/slack/search": {
+          if (!deps.slack) return jsonError("Slack console is not configured", 503);
+          const found = await app.searchConversations(q("q"));
+          return found.ok ? Response.json(found.value) : jsonError(found.error, found.status);
+        }
         // Names for the mentions on screen, one batch per view (`?users=U1,U2&channels=C1`).
         case "/api/slack/names":
           return slackGuard(() => app.slackNames(q("users"), q("channels")));

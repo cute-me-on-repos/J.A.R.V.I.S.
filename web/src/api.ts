@@ -165,8 +165,14 @@ export type SlackMessage = {
   replyCount: number;
   threadTs?: string;
   own: boolean;
+  /** posted by a bot or app (Jarvis included: `own` tells it apart) */
+  bot?: boolean;
   mentionsBot: boolean;
 };
+/** A page of history: oldest first, `nextCursor` fetches the next older page. */
+export type HistoryPage = { messages: SlackMessage[]; nextCursor?: string };
+/** A page of a thread: oldest first; `hasMore` says older replies remain. */
+export type ThreadPage = { messages: SlackMessage[]; hasMore: boolean };
 
 export type CommandInfo = {
   name: string;

@@ -87,6 +87,12 @@ describe("styling", () => {
 
   test("snake_case, math and lone markers are not styling", () => {
     expect(parseInline("a_b_c 2 * 3 * 4 *x")).toEqual([{ t: "text", text: "a_b_c 2 * 3 * 4 *x" }]);
+    // a dunder is a name, not italics
+    expect(parseInline("__init__")).toEqual([{ t: "text", text: "__init__" }]);
+    expect(parseInline("call __init__ and _x_")).toEqual([
+      { t: "text", text: "call __init__ and " },
+      { t: "italic", children: [{ t: "text", text: "x" }] },
+    ]);
   });
 
   test("code is literal: no styling and no mentions inside", () => {
