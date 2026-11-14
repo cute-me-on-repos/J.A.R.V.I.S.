@@ -79,7 +79,7 @@ import {
 import { rankOf as roleRank } from "../../domain/roles.ts";
 import { seededBook } from "../../domain/roleSeed.ts";
 import { decideAccess } from "../../domain/access.ts";
-import { reviewRequestIn } from "../../domain/reviewRequest.ts";
+import { opensWithBotTag, reviewRequestIn } from "../../domain/reviewRequest.ts";
 import { createFollowGate } from "../../application/followGate.ts";
 import { createGateModel } from "../../application/followGateModel.ts";
 import type { ToolPolicy } from "../../domain/toolPolicy.ts";
@@ -514,11 +514,11 @@ export const createHandler =
       const parts = stream?.parts ?? [];
       const fail = (e: unknown) => log(`collapse failed: ${e instanceof Error ? e.message : String(e)}`);
       const collapsed = collapseSteps(stream?.steps ?? []);
-      // Signed and stamped now: this is the moment the message is written
-      // for the last time, so "updated" is when the turn finished.
+      // Signed, not stamped: tidying the streamed reply is still its first
+      // send, and "updated" is only for a later edit (restamp).
       const footer = footerLine(
         (result.kind === "reply" ? result.by : undefined) ?? SIGNATURES.jarvis,
-        deps.clock(),
+        undefined,
         stream?.usage ? usageFooter(stream.usage) : undefined,
       );
       const tidy = (text: string, withTail: boolean, asWords = false) => {
@@ -653,7 +653,7 @@ export const createHandler =
         ? "that one ran past my time limit for a single turn, so I lost it. it usually means I was digging through a lot - ask me again with a narrower scope, or run it as a `workflow` which has no such limit"
         : "Sorry, I hit an error handling that. Please try again in a moment.";
       await msg
-        .say({ ...signedText(text, footerLine(SIGNATURES.jarvis, deps.clock())), thread_ts: msg.threadTs })
+        .say({ ...signedText(text, footerLine(SIGNATURES.jarvis)), thread_ts: msg.threadTs })
         .catch(() => msg.say({ text, thread_ts: msg.threadTs }))
         .catch(logAndIgnore("error reply to thread"));
     } finally {
@@ -1909,6 +1909,13 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
       threadTs: threadKeyOf(m),
       messageTs: m.ts,
       client: asClient(client),
+      // Slack never sends `app_mention` for a DM, so a tag that opens the text
+      // is the only sign the bot was addressed - which `respond` needs before a
+      // spoken "review <pr>" may run. Only the bot's own tag counts, not every
+      // DM. A thread reply in a DM comes through here too (never `following`).
+      ...(opensWithBotTag(m.text!, await deps.slack?.botUserId().catch(ignoreQuietly("bot user id lookup")))
+        ? { mentioned: true }
+        : {}),
       say: say as Incoming["say"],
     });
   });

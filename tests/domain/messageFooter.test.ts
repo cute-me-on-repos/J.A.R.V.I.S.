@@ -58,6 +58,11 @@ describe("footerLine", () => {
   test("a blank signature is still signed, as Jarvis", () => {
     expect(footerLine(" ", AT, undefined, ICT).startsWith("Jarvis · ")).toBe(true);
   });
+
+  test("a first send has no edit time, so no \"updated\"", () => {
+    expect(footerLine("Jarvis")).toBe("Jarvis");
+    expect(footerLine("Jarvis", undefined, "claude-opus-5-5 · $0.20")).toBe("Jarvis · claude-opus-5-5 · $0.20");
+  });
 });
 
 describe("blocks", () => {
@@ -197,6 +202,12 @@ describe("restamp", () => {
     const after = restamp([{ type: "section", text: { type: "mrkdwn", text: "Which?" } }], "Jarvis", later, ICT);
     expect(after).toHaveLength(2);
     expect(after[1]).toEqual(footerBlock(footerLine("Jarvis", later, undefined, ICT)));
+  });
+
+  test("the first edit of an unstamped first send adds the stamp after the usage", () => {
+    const before = [{ type: "context", block_id: FOOTER_BLOCK_ID, elements: [{ type: "mrkdwn", text: footerLine("Jarvis", undefined, "$0.20") }] }];
+    const line = (restamp(before, "Jarvis", later, ICT)[0] as { elements: { text: string }[] }).elements[0]!.text;
+    expect(line).toBe(`Jarvis · $0.20 · ${updatedStamp(later, ICT)}`);
   });
 
   test("a footer missing its stamp gains one", () => {

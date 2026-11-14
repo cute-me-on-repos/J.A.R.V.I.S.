@@ -14,12 +14,12 @@ import { footerBlock, footerLine, SIGNATURES } from "../../domain/messageFooter.
 const RECENT_LIMIT = 50;
 
 /**
- * The notice plus its signature footer, stamped `atMs`: when Slack will post
- * it for a scheduled notice, now for an edit.
+ * The notice plus its signature footer: unstamped for the scheduled post,
+ * stamped `editedMs` for an edit.
  */
-const blocks = (msg: AlarmMessage, atMs: number): KnownBlock[] => [
+const blocks = (msg: AlarmMessage, editedMs?: number): KnownBlock[] => [
   ...msg.blocks.map((b) => ({ ...b, text: { ...b.text } })),
-  footerBlock(footerLine(SIGNATURES.offlineAlarm, atMs)) as KnownBlock,
+  footerBlock(footerLine(SIGNATURES.offlineAlarm, editedMs)) as KnownBlock,
 ];
 
 /**
@@ -43,7 +43,7 @@ export const createOfflineAlarmSlack = (client: WebClient, clock: () => number =
         channel,
         post_at: postAtSecs,
         text: msg.text,
-        blocks: blocks(msg, postAtSecs * 1000),
+        blocks: blocks(msg),
       })) as { scheduled_message_id?: string };
       if (!res.scheduled_message_id) throw new Error("chat.scheduleMessage returned no id");
       return res.scheduled_message_id;

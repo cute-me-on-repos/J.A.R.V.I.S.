@@ -45,3 +45,15 @@ export const reviewRequestIn = (text: string): string | undefined => {
   // not trying. Typed with the prefix, the free text is the steering note.
   return `quick-review ${[...urls, ...(spoken.match(FLAGS) ?? [])].join(" ")}`;
 };
+
+/**
+ * Whether the message opens with the bot's own tag. Slack sends `app_mention`
+ * only for a tag in a channel, never in a DM, so a DM has to work this out
+ * from the text: `reviewRequestIn` accepts any leading mention, and a DM that
+ * opens with somebody else's tag was not said to the bot.
+ */
+export const opensWithBotTag = (text: string, botUserId: string | undefined): boolean => {
+  if (!botUserId) return false;
+  const mention = LEADING_MENTIONS.exec(text);
+  return !!mention && [...mention[0].matchAll(/<@([UW][A-Z0-9]+)/g)].some((m) => m[1] === botUserId);
+};

@@ -134,6 +134,12 @@ describe("what waits for the next process while a restart is pending", () => {
     expect(waitsForRestart("events_api", msg(`<@UBOT> could you review ${pr}`, "app_mention"), P)).toBe(false);
     expect(waitsForRestart("events_api", reply(`<@UBOT> review ${pr}`), P)).toBe(false);
   });
+  test("a tagged review in a DM waits too, one without the tag does not", () => {
+    const pr = "https://github.com/o/r/pull/9";
+    expect(waitsForRestart("events_api", dm(`<@UBOT> review ${pr}`), P)).toBe(true);
+    expect(waitsForRestart("events_api", dm(`review ${pr}`), P)).toBe(false);
+    expect(waitsForRestart("events_api", dm(`<@UBOT> could you review ${pr}`), P)).toBe(false);
+  });
   test("slash commands and buttons wait; other events (reactions, stop) do not", () => {
     expect(waitsForRestart("slash_commands", { command: "/jv" }, P)).toBe(true);
     expect(waitsForRestart("interactive", { type: "block_actions" }, P)).toBe(true);

@@ -426,7 +426,7 @@ describe("createHandler streaming truth table", () => {
     expect(updates[0]?.reply_broadcast).toBeUndefined();
   });
 
-  test("a streamed reply is signed Jarvis with when it was last updated, even with nothing to collapse", async () => {
+  test("a streamed reply is signed Jarvis, with no stamp on its first send, even with nothing to collapse", async () => {
     const { handle, msg, updates } = build({
       llm: streamingLlm("hello there", [{ type: "text", delta: "hello there" }]),
       streamUpdates: true,
@@ -436,7 +436,8 @@ describe("createHandler streaming truth table", () => {
     const blocks = updates[0]?.blocks as { type: string; block_id?: string; elements?: { text?: string }[] }[];
     const footer = blocks.at(-1);
     expect(footer).toMatchObject({ type: "context", block_id: FOOTER_BLOCK_ID });
-    expect(footer?.elements?.[0]?.text).toMatch(/^Jarvis · .*updated <!date\^\d+\^/);
+    expect(footer?.elements?.[0]?.text).toStartWith("Jarvis");
+    expect(footer?.elements?.[0]?.text).not.toContain("updated");
   });
 
   test("a signed plain post Slack refuses still goes out, bare", async () => {
@@ -531,7 +532,7 @@ describe("createHandler streaming truth table", () => {
     const tagged = build({ llm, streamUpdates: false });
     await tagged.handle({ ...tagged.msg(`<@UBOT> review ${PR}`), mentioned: true });
     expect(brainRan).toBe(0); // quick-review took it, not the chat brain
-    // the same words with no tag (a DM, a followed thread's reply) are chat
+    // the same words with no `mentioned` flag (an untagged DM, a followed thread's reply) are chat
     const untagged = build({ llm, streamUpdates: false });
     await untagged.handle(untagged.msg(`<@UBOT> review ${PR}`));
     expect(brainRan).toBe(1);
