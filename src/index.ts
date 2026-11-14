@@ -891,6 +891,7 @@ const main = async () => {
       executerDbMcpServers: config.executerDbMcpServers,
       roleRepo,
       messages,
+      briefs,
       learnings,
       learningApproval,
       kitViews,
