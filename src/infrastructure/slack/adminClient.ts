@@ -149,6 +149,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       replyCount: m.reply_count ?? 0,
       threadTs: m.thread_ts,
       own: userId === botId,
+      ...(m.bot_id ? { bot: true } : {}),
       mentionsBot: botId ? MENTION(botId).test(text) : false,
       ...(m.files && m.files.length > 0
         ? {
@@ -458,6 +459,30 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       };
       return {
         members: (res.members ?? []).filter((m) => m.id).map(toMember),
+        ...(res.response_metadata?.next_cursor ? { nextCursor: res.response_metadata.next_cursor } : {}),
+      };
+    },
+
+    listConversationPage: async (what, cursor) => {
+      const res = (await client.conversations.list({
+        types: what === "channels" ? "public_channel,private_channel" : "im",
+        exclude_archived: true,
+        limit: 200,
+        ...(cursor ? { cursor } : {}),
+      })) as { channels?: RawConversation[]; response_metadata?: { next_cursor?: string } };
+      return {
+        conversations: (res.channels ?? []).flatMap((c) =>
+          c.id
+            ? [
+                {
+                  id: c.id,
+                  name: c.name ?? "",
+                  kind: c.is_im ? ("im" as const) : c.is_private ? ("group" as const) : ("channel" as const),
+                  ...(c.user ? { userId: c.user } : {}),
+                },
+              ]
+            : [],
+        ),
         ...(res.response_metadata?.next_cursor ? { nextCursor: res.response_metadata.next_cursor } : {}),
       };
     },

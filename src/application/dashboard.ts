@@ -17,6 +17,7 @@ import { isKnownPermission, isOwnerOnlyPermission } from "../domain/permissions.
 import { seededBook, type SeedInput } from "../domain/roleSeed.ts";
 import { addMcpServer, catalogueFor, defaultRoleOf, deleteRole, renameRole, setDefaultRole, type RoleEditDeps } from "./roles.ts";
 import type { RoleRepo } from "../infrastructure/db/roleRepo.ts";
+import type { ConversationDirectory } from "./conversationDirectory.ts";
 import { cleanIds, CHANNEL_ID, USER_ID, userLabel } from "../domain/slackNames.ts";
 import type { NameResolver } from "./nameResolver.ts";
 import { KIT_MODAL_PREFIX, viewProblem, type KitView } from "../domain/kitEvents.ts";
@@ -30,10 +31,40 @@ import { fillDays, offsetMsOf, statsDays, windowStart } from "../domain/dashboar
 import { logAndIgnore } from "./ignoredError.ts";
 import { rewordLearning, proposeLearning, type LearningApprovalDeps } from "./learningApproval.ts";
 import { AGENT_SOURCE, pendingApiMessage } from "../domain/learning.ts";
-import { briefToInternal, sortInternal, STEER_PREFIXES, turnToInternal, type InternalMessage, type StoredBrief, type StoredTurn } from "../domain/internalMessages.ts";
+import {
+  briefToInternal,
+  sortInternal,
+  STEER_PREFIXES,
+  turnToDbTurn,
+  turnToInternal,
+  type DbTurn,
+  type InternalMessage,
+  type StoredBrief,
+  type StoredFullTurn,
+  type StoredTurn,
+} from "../domain/internalMessages.ts";
 
 /** Hidden messages returned per request: the newest, enough to debug a thread without an unbounded read. */
-const INTERNAL_LIMIT = 300;
+/** One page of the console's DB-backed rows (hidden messages, DB copies); the client pages by time window. */
+const INTERNAL_LIMIT = 100;
+/** The DB copy is cut at this many turns per window, a runaway guard like the page above. */
+const TURNS_LIMIT = 300;
+const CONVERSATION_RESULTS = 20;
+
+/** `since` / `before` in ms (a window over when turns were stored) and a page size, as the endpoints receive them. */
+type RangeIn = { since?: unknown; before?: unknown; limit?: unknown };
+const msOf = (v: unknown): number | undefined => {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : typeof v === "number" ? v : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+};
+const timeRange = (r?: RangeIn): { since?: number; before?: number } => {
+  const since = msOf(r?.since);
+  const before = msOf(r?.before);
+  return { ...(since === undefined ? {} : { since }), ...(before === undefined ? {} : { before }) };
+};
+const inRange = (at: number, r: { since?: number; before?: number }): boolean =>
+  (r.since === undefined || at >= r.since) && (r.before === undefined || at < r.before);
+const pageLimit = (v: unknown, max: number): number => Math.min(max, Math.max(1, Math.floor(msOf(v) ?? max)));
 
 /** A refused use case: what to tell the caller, and the HTTP-ish status it maps to. */
 export type Refusal = { readonly ok: false; readonly error: string; readonly status: number };
@@ -97,7 +128,15 @@ export type DashboardPorts = {
     readonly clearThread: (channelId: string, threadTs: string) => unknown;
     readonly clearChannel: (channelId: string) => unknown;
     /** Stored `user` turns opening with one of the prefixes (the hidden steer turns), see `MessageRepo`. */
-    readonly userTurnsStartingWith?: (channelId: string, prefixes: readonly string[], limit: number, threadTs?: string) => readonly StoredTurn[];
+    readonly userTurnsStartingWith?: (
+      channelId: string,
+      prefixes: readonly string[],
+      limit: number,
+      threadTs?: string,
+      range?: { since?: number; before?: number },
+    ) => readonly StoredTurn[];
+    /** Every stored turn of a channel or one thread inside a time window, with author and Slack ts, see `MessageRepo`. */
+    readonly turnsInRange?: (channelId: string, limit: number, threadTs?: string, range?: { since?: number; before?: number }) => readonly StoredFullTurn[];
   };
   /** Notes one thread left for another (`brief`), see `ThreadBriefRepo`. */
   readonly briefs?: {
@@ -139,6 +178,8 @@ export type DashboardPorts = {
   readonly kitViews?: { readonly save: (view: KitView, at: number) => string };
   /** The workspace's members, cached, for the Users page's search. Absent: no search, paste an id. */
   readonly directory?: SlackDirectory;
+  /** Channels and DMs beyond the sidebar's loaded list, for its search. Absent: search finds nothing new. */
+  readonly conversations?: ConversationDirectory;
   /**
    * The CLI session bound to each thread. A clear forgets these too: a thread
    * that resumes its session still remembers everything, whatever `messages` holds.
@@ -657,19 +698,52 @@ export const createDashboardService = (p: DashboardPorts) => {
    * first, for one channel or just one of its threads. Read-only, secrets
    * redacted. A channel with none gives an empty list, never an error.
    */
-  memoryInternal: (channelIn: unknown, threadIn?: unknown): Outcome<{ items: InternalMessage[] }> => {
+  memoryInternal: (channelIn: unknown, threadIn?: unknown, rangeIn?: RangeIn): Outcome<{ items: InternalMessage[] }> => {
     const channel = text(channelIn);
     if (!channel) return refuse("Channel required");
     // A thread that was asked for but is blank must not widen to the whole channel.
     const asked = threadIn !== undefined && threadIn !== null;
     const thread = asked ? text(threadIn) : undefined;
     if (asked && !thread) return refuse("Thread required");
-    const turns = (p.messages.userTurnsStartingWith?.(channel, STEER_PREFIXES, INTERNAL_LIMIT, thread) ?? []).flatMap((t) => {
+    const range = timeRange(rangeIn);
+    const limit = pageLimit(rangeIn?.limit, INTERNAL_LIMIT);
+    const turns = (p.messages.userTurnsStartingWith?.(channel, STEER_PREFIXES, limit, thread, range) ?? []).flatMap((t) => {
       const m = turnToInternal(t);
       return m ? [m] : [];
     });
-    const briefs = (p.briefs?.toChannel(channel, INTERNAL_LIMIT, thread) ?? []).map(briefToInternal);
-    return done({ items: sortInternal([...turns, ...briefs]).slice(-INTERNAL_LIMIT) });
+    const briefs = (p.briefs?.toChannel(channel, limit, thread) ?? []).map(briefToInternal).filter((b) => inRange(b.at, range));
+    return done({ items: sortInternal([...turns, ...briefs]).slice(-limit) });
+  },
+
+  /**
+   * The DB copy of a conversation: every ordinary stored turn of a channel (or
+   * one thread) inside a time window, oldest first. The console lays it over a
+   * Slack page to show what Slack no longer has. Read-only, secrets redacted.
+   */
+  memoryTurns: (channelIn: unknown, threadIn?: unknown, rangeIn?: RangeIn): Outcome<{ items: DbTurn[] }> => {
+    const channel = text(channelIn);
+    if (!channel) return refuse("Channel required");
+    const asked = threadIn !== undefined && threadIn !== null;
+    const thread = asked ? text(threadIn) : undefined;
+    if (asked && !thread) return refuse("Thread required");
+    const rows = p.messages.turnsInRange?.(channel, pageLimit(rangeIn?.limit, TURNS_LIMIT), thread, timeRange(rangeIn)) ?? [];
+    return done({ items: rows.flatMap((r) => { const t = turnToDbTurn(r); return t ? [t] : []; }) });
+  },
+
+  /**
+   * Channels and DMs matching what was typed in the sidebar filter, beyond the
+   * list already loaded: every channel by name, and the DM with each matching
+   * person. Read-only Slack lists, cached.
+   */
+  searchConversations: async (queryIn: unknown): Promise<Outcome<{ conversations: unknown[] }>> => {
+    const query = text(queryIn).slice(0, 80);
+    if (!query || !p.conversations) return done({ conversations: [] });
+    try {
+      const people = p.directory ? await p.directory.search(query, CONVERSATION_RESULTS).catch(() => []) : [];
+      return done({ conversations: await p.conversations.search(query, people, CONVERSATION_RESULTS) });
+    } catch (e) {
+      return refuse(`Could not search Slack: ${e instanceof Error ? e.message : String(e)}`, 502);
+    }
   },
 
   /**

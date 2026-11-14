@@ -10,9 +10,10 @@ const NONE: SlackNames = { users: {}, channels: {} };
 /**
  * Names for every mention in `texts`, fetched in ONE request per change of the
  * set (`GET slack/names`), and only for ids not asked about yet. A failure just
- * leaves the raw ids on screen.
+ * leaves the raw ids on screen. `enabled` false holds the lookup back, so a page
+ * that is still arriving in pieces asks once, for everything, when it is whole.
  */
-export function useSlackNames(texts: readonly string[]): SlackNames {
+export function useSlackNames(texts: readonly string[], enabled = true): SlackNames {
   const [names, setNames] = useState<SlackNames>(NONE);
   const refs = mrkdwnRefs(texts);
   const wanted = (ids: string[], have: Readonly<Record<string, string>>) => ids.filter((id) => !(id in have));
@@ -21,7 +22,7 @@ export function useSlackNames(texts: readonly string[]): SlackNames {
   const key = `${users.join(",")}|${channels.join(",")}`;
 
   useEffect(() => {
-    if (!users.length && !channels.length) return;
+    if (!enabled || (!users.length && !channels.length)) return;
     let stale = false;
     const qs = new URLSearchParams();
     if (users.length) qs.set("users", users.join(","));
@@ -42,7 +43,7 @@ export function useSlackNames(texts: readonly string[]): SlackNames {
     };
     // `key` is the content of users/channels
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, enabled]);
 
   return names;
 }

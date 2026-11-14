@@ -5,6 +5,8 @@
  * without a browser.
  */
 
+import { turnTime, type DbTurn } from "./deletedTurns.ts";
+
 export type InternalKind = "tell" | "brief" | "watch" | "nudge" | "orca" | "loop";
 
 /** One hidden message, as the server sends it (`at` in ms, `threadTs` is the thread it went into). */
@@ -38,7 +40,8 @@ export const previewOf = (text: string): { shown: string; cut: boolean } => {
 
 export type TimelineEntry<M extends { ts: string }> =
   | { type: "slack"; at: number; message: M }
-  | { type: "internal"; at: number; message: InternalMessage };
+  | { type: "internal"; at: number; message: InternalMessage }
+  | { type: "deleted"; at: number; message: DbTurn };
 
 const tsMs = (ts: string): number => Number(ts) * 1000 || 0;
 
@@ -61,11 +64,16 @@ export const pickInternal = (
   );
 };
 
-/** Slack messages and hidden ones in one time order; on a tie the Slack message comes first. */
-export const mergeTimeline = <M extends { ts: string }>(messages: readonly M[], internal: readonly InternalMessage[]): TimelineEntry<M>[] => {
+/** Slack messages, hidden ones and DB-only ones (deleted on Slack) in one time order; on a tie the Slack message comes first. */
+export const mergeTimeline = <M extends { ts: string }>(
+  messages: readonly M[],
+  internal: readonly InternalMessage[],
+  deleted: readonly DbTurn[] = [],
+): TimelineEntry<M>[] => {
   const all: TimelineEntry<M>[] = [
     ...messages.map((message): TimelineEntry<M> => ({ type: "slack", at: tsMs(message.ts), message })),
     ...internal.map((message): TimelineEntry<M> => ({ type: "internal", at: message.at, message })),
+    ...deleted.map((message): TimelineEntry<M> => ({ type: "deleted", at: turnTime(message), message })),
   ];
   // Array#sort is stable: equal times keep Slack ahead of hidden, each in its own order.
   return all.sort((a, b) => a.at - b.at);

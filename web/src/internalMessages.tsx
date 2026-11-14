@@ -14,8 +14,9 @@ export function InternalRow({ m, names, onOpenThread }: { m: InternalMessage; na
   const meta = KIND_META[m.kind];
   const { shown, cut } = previewOf(m.text);
   return (
-    <div className={`msg internal internal-${m.kind}`} title={meta.hint}>
+    <div className={`msg internal k-internal internal-${m.kind}`} title={meta.hint}>
       <div className="msg-head">
+        <span className="kind-dot" aria-hidden />
         <span className="internal-icon" aria-hidden>{meta.icon}</span>
         <span className="badge member">{meta.label}</span>
         <strong>{sourceLabel(m, names)}</strong>

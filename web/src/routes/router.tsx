@@ -35,7 +35,8 @@ export const router = createBrowserRouter([
       { path: "roles", loader: roles.loader, action: roles.action, element: <roles.RolesPage /> },
       { path: "learnings", loader: memory.loader, action: memory.action, element: <memory.LearningsPage /> },
       { path: "identity", loader: identity.loader, action: identity.action, element: <identity.IdentityPage /> },
-      { path: "console", element: <ConsolePage /> },
+      // `/console`, `/console/<channel>`, `/console/<channel>/<thread_ts>`: the page reads the rest of the path itself.
+      { path: "console/*", element: <ConsolePage /> },
       { path: "commands", loader: commands.loader, action: commands.action, element: <commands.CommandsPage /> },
       { path: "spend", loader: spend.loader, element: <spend.SpendPage /> },
       { path: "architecture", element: <ArchitecturePage /> },

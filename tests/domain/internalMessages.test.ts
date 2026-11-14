@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { briefToInternal, classifyTurn, MAX_INTERNAL_TEXT, sortInternal, STEER_PREFIXES, turnToInternal } from "../../src/domain/internalMessages.ts";
+import { briefToInternal, classifyTurn, MAX_INTERNAL_TEXT, sortInternal, STEER_PREFIXES, turnToDbTurn, turnToInternal } from "../../src/domain/internalMessages.ts";
 import { cleanInboundText } from "../../src/domain/conversation.ts";
 import { steerPrompt, tellPrompt } from "../../src/domain/tellPrompt.ts";
 import { nudgeText } from "../../src/domain/stalePromise.ts";
@@ -80,5 +80,40 @@ describe("internal message classification", () => {
   test("every prefix the repo pre-filters on is one the classifier can accept", () => {
     expect(STEER_PREFIXES.length).toBeGreaterThan(5);
     expect(new Set(STEER_PREFIXES).size).toBe(STEER_PREFIXES.length);
+  });
+});
+
+describe("turnToDbTurn: the DB copy of a message", () => {
+  const stored = (over: Partial<{ role: string; content: string; slackTs: string; threadTs: string }> = {}) => ({
+    id: 7,
+    role: "user",
+    content: "hello",
+    createdAt: 5,
+    slackUserId: "U1",
+    ...over,
+  });
+
+  test("an ordinary turn keeps its author, ts and thread; secrets are redacted", () => {
+    expect(turnToDbTurn(stored({ content: "token xoxb-1234567890-abcdefghij", slackTs: "1.5", threadTs: "1.5" }))).toEqual({
+      id: "turn:7",
+      role: "user",
+      userId: "U1",
+      text: "token [redacted]",
+      at: 5,
+      ts: "1.5",
+      threadTs: "1.5",
+    });
+    expect(turnToDbTurn(stored({ role: "assistant" }))).toMatchObject({ role: "assistant", ts: "", threadTs: "" });
+  });
+
+  test("steer turns are hidden messages, not DB copies, and a NO_REPLY was never posted", () => {
+    expect(turnToDbTurn(stored({ content: tellPrompt("U9", "ship it") }))).toBeUndefined();
+    expect(turnToDbTurn(stored({ role: "assistant", content: "NO_REPLY" }))).toBeUndefined();
+    // a person typing a look-alike in an assistant row is still the bot's text
+    expect(turnToDbTurn(stored({ role: "assistant", content: tellPrompt("U9", "x") }))).toBeDefined();
+  });
+
+  test("a long turn is clipped", () => {
+    expect(turnToDbTurn(stored({ content: "a".repeat(MAX_INTERNAL_TEXT + 50) }))!.text).toContain("more characters cut");
   });
 });
