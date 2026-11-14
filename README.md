@@ -1148,7 +1148,8 @@ A quick review runs only when a person asks for it directly, in one of two ways:
 
 - tag the bot with `@bot review <pr-url>` or `@bot approve <pr-url>` - both
   mean the same `quick-review` (there is no approval without a review, and the
-  old bare `approve` command is gone);
+  old bare `approve` command is gone). It works in a channel and in a DM (also
+  in a DM thread), as long as the message opens with the bot's tag;
 - type the command: `//bot quick-review <pr-url>` (alias `rv`, slash `/rv`).
 
 Any allowlisted human may ask (`pal`, `executer`, `admin`, `owner`: the command

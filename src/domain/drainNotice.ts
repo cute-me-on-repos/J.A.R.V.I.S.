@@ -147,6 +147,9 @@ export const waitsForRestart = (
   const text = typeof event.text === "string" ? event.text : "";
   const bare = text.replace(/^(\s*<@[^>]+>)+\s*/, "").trimStart().toLowerCase();
   if (commandPrefixes.some((p) => p.trim() && bare.startsWith(p.trim().toLowerCase()))) return true;
-  // Only a tag can be a spoken quick-review: an untagged message never is.
-  return event.type === "app_mention" && reviewRequestIn(text) !== undefined;
+  // Only a tag can be a spoken quick-review: an untagged message never is. A DM
+  // gets no `app_mention`, so its own tagged message is the ask (any leading tag
+  // holds it - one held too many costs a short wait, not a wrong review).
+  const isDm = event.channel_type === "im" || (typeof event.channel === "string" && event.channel.startsWith("D"));
+  return (event.type === "app_mention" || (event.type === "message" && isDm)) && reviewRequestIn(text) !== undefined;
 };

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { reviewRequestIn } from "../../src/domain/reviewRequest.ts";
+import { opensWithBotTag, reviewRequestIn } from "../../src/domain/reviewRequest.ts";
 
 const PR = "https://github.com/acme/acme-web/pull/8011";
 
@@ -41,5 +41,20 @@ describe("reviewRequestIn", () => {
     // "when free" is not guidance, and guessing which half of a sentence
     // was meant as one is worse than not trying
     expect(reviewRequestIn(`<@U1> review ${PR} when free`)).toBe(`quick-review ${PR}`);
+  });
+});
+
+describe("opensWithBotTag", () => {
+  test("only the bot's own tag at the start counts", () => {
+    expect(opensWithBotTag(`<@U0BOT000001> review ${PR}`, "U0BOT000001")).toBe(true);
+    expect(opensWithBotTag(`  <@U0BOT000001|Jarvis> review ${PR}`, "U0BOT000001")).toBe(true);
+    expect(opensWithBotTag(`<@U0BOT000001:Jarvis> review ${PR}`, "U0BOT000001")).toBe(true);
+    expect(opensWithBotTag(`<@U1> <@U0BOT000001> review ${PR}`, "U0BOT000001")).toBe(true);
+  });
+  test("no tag, somebody else's tag, a later tag or an unknown bot id does not", () => {
+    expect(opensWithBotTag(`review ${PR}`, "U0BOT000001")).toBe(false);
+    expect(opensWithBotTag(`<@U1> review ${PR}`, "U0BOT000001")).toBe(false);
+    expect(opensWithBotTag(`review ${PR} <@U0BOT000001>`, "U0BOT000001")).toBe(false);
+    expect(opensWithBotTag(`<@U0BOT000001> review ${PR}`, undefined)).toBe(false);
   });
 });
