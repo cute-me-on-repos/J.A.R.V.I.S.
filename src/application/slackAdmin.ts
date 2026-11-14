@@ -49,7 +49,12 @@ export type HistoryPage = {
 };
 
 /** Where a posted message ended up. */
-export type PostedRef = { channel: string; ts: string };
+export type PostedRef = {
+  channel: string;
+  ts: string;
+  /** `noticeFingerprint` of the blocks as posted, for a message whose buttons are checked on a press. */
+  fingerprint?: string;
+};
 
 /** One message as it sits in Slack, enough to move it between a thread and the channel. */
 export type SlackMessageRef = {
@@ -179,7 +184,9 @@ export type SlackAdminPort = {
   /**
    * Rewrite an interactive message to `text` and keep `actions` as its buttons
    * (a decided notice that can still be flipped). `settleInteractive` is for
-   * everything that must not be pressed again; this is not.
+   * everything that must not be pressed again; this is not. Resolves to the
+   * `noticeFingerprint` of what it wrote, or undefined when the rewrite was
+   * refused and the message was settled plainly instead.
    */
   updateInteractive?: (
     channel: string,
@@ -187,7 +194,7 @@ export type SlackAdminPort = {
     text: string,
     actions: readonly InteractiveAction[],
     by?: string,
-  ) => Promise<void>;
+  ) => Promise<string | undefined>;
   /** Add reactions to a message (tolerant of already-reacted / invalid names). Returns how many landed. */
   addReactions: (channel: string, ts: string, names: readonly string[]) => Promise<number>;
   /** The bot's own Slack user id, so it can recognise itself being tagged. */

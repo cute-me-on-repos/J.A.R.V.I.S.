@@ -7,6 +7,7 @@ import { WebClient } from "@slack/web-api";
 import { splitForBlocks, toMrkdwn } from "../../domain/slackFormat.ts";
 import { toBlockMessage } from "../../domain/blockKit.ts";
 import { type MessageBlock, visibleText } from "../../domain/slackMessageText.ts";
+import { noticeFingerprint } from "../../domain/noticeFingerprint.ts";
 import { footerBlock, footerLine, sectionChunks, signedSections, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
 import type { SlackMember } from "../../domain/slackMembers.ts";
 import { type FooterUsage, usageFooter } from "../../domain/usageFooter.ts";
@@ -328,48 +329,46 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       const open = (await client.conversations.open({ users: userId })) as { channel?: { id?: string } };
       const channel = open.channel?.id;
       if (!channel) return undefined;
-      const posted = (await client.chat.postMessage({
-        channel,
-        text,
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: toMrkdwn(text) } },
-          {
-            type: "actions",
-            elements: actions.map((a) => ({
-              type: "button",
-              action_id: a.actionId,
-              text: { type: "plain_text", text: a.label },
-              value: a.value,
-              ...(a.style ? { style: a.style } : {}),
-            })),
-          },
-          footerBlock(footer(by)),
-        ],
-      })) as { ts?: string };
-      return posted.ts ? { channel, ts: posted.ts } : undefined;
+      const blocks = [
+        { type: "section", text: { type: "mrkdwn", text: toMrkdwn(text) } },
+        {
+          type: "actions",
+          elements: actions.map((a) => ({
+            type: "button",
+            action_id: a.actionId,
+            text: { type: "plain_text", text: a.label },
+            value: a.value,
+            ...(a.style ? { style: a.style } : {}),
+          })),
+        },
+        footerBlock(footer(by)),
+      ];
+      const posted = (await client.chat.postMessage({ channel, text, blocks })) as { ts?: string };
+      return posted.ts ? { channel, ts: posted.ts, fingerprint: noticeFingerprint(blocks) } : undefined;
     },
 
     postInteractive: async (channel, text, actions, threadTs, by) => {
+      const blocks = [
+        { type: "section", text: { type: "mrkdwn", text: toMrkdwn(text) } },
+        {
+          type: "actions",
+          elements: actions.map((a) => ({
+            type: "button",
+            action_id: a.actionId,
+            text: { type: "plain_text", text: a.label },
+            value: a.value,
+            ...(a.style ? { style: a.style } : {}),
+          })),
+        },
+        footerBlock(footer(by)),
+      ];
       const posted = (await client.chat.postMessage({
         channel,
         text,
         ...(threadTs ? { thread_ts: threadTs } : {}),
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: toMrkdwn(text) } },
-          {
-            type: "actions",
-            elements: actions.map((a) => ({
-              type: "button",
-              action_id: a.actionId,
-              text: { type: "plain_text", text: a.label },
-              value: a.value,
-              ...(a.style ? { style: a.style } : {}),
-            })),
-          },
-          footerBlock(footer(by)),
-        ],
+        blocks,
       })) as { ts?: string };
-      return posted.ts ? { channel, ts: posted.ts } : undefined;
+      return posted.ts ? { channel, ts: posted.ts, fingerprint: noticeFingerprint(blocks) } : undefined;
     },
 
     postMenu: async (channel, text, menu, threadTs, by) => {
@@ -421,28 +420,28 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
     settleInteractive: settle,
 
     updateInteractive: async (channel, ts, text, actions, by) => {
-      // The decision shown, the buttons kept. Refused: settle it plainly, the decision is stored either way.
-      await client.chat
-        .update({
-          channel,
-          ts,
-          text: text || " ",
-          blocks: [
-            ...sectionChunks(text).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } })),
-            {
-              type: "actions",
-              elements: actions.map((a) => ({
-                type: "button",
-                action_id: a.actionId,
-                text: { type: "plain_text", text: a.label, emoji: true },
-                value: a.value,
-                ...(a.style ? { style: a.style } : {}),
-              })),
-            },
-            footerBlock(footer(by)),
-          ] as never,
-        })
-        .catch(() => settle(channel, ts, text, by));
+      // The decision shown, the buttons kept. Refused: settle it plainly (no buttons, so no fingerprint), the decision is stored either way.
+      const blocks = [
+        ...sectionChunks(text).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } })),
+        {
+          type: "actions",
+          elements: actions.map((a) => ({
+            type: "button",
+            action_id: a.actionId,
+            text: { type: "plain_text", text: a.label, emoji: true },
+            value: a.value,
+            ...(a.style ? { style: a.style } : {}),
+          })),
+        },
+        footerBlock(footer(by)),
+      ];
+      try {
+        await client.chat.update({ channel, ts, text: text || " ", blocks: blocks as never });
+        return noticeFingerprint(blocks);
+      } catch {
+        await settle(channel, ts, text, by);
+        return undefined;
+      }
     },
 
     addReactions: async (channel, ts, names) => {

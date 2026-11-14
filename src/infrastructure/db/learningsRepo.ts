@@ -19,6 +19,7 @@ type Row = {
   status: LearningStatus;
   notice_channel: string;
   notice_ts: string;
+  notice_fingerprint: string;
   source_channel: string;
   source_thread_ts: string;
   source_run_id: string;
@@ -32,6 +33,7 @@ const toLearning = (row: Row): Learning => ({
   status: row.status,
   noticeChannel: row.notice_channel,
   noticeTs: row.notice_ts,
+  noticeFingerprint: row.notice_fingerprint,
   sourceChannel: row.source_channel,
   sourceThreadTs: row.source_thread_ts,
   sourceRunId: row.source_run_id,
@@ -49,7 +51,9 @@ export type LearningsRepo = {
   /** New wording, and the status it now has (a rewording by anyone but the owner is pending again). */
   update: (id: number, content: string, status: LearningStatus) => void;
   /** Where the owner's Approve / Reject message for a pending learning lives. */
-  setNotice: (id: number, channel: string, ts: string) => void;
+  setNotice: (id: number, channel: string, ts: string, fingerprint?: string) => void;
+  /** The fingerprint of the notice after the bot rewrote it ('' when it no longer carries buttons). */
+  setNoticeFingerprint: (id: number, fingerprint: string) => void;
   /** Set the learning's status once: false when it already has it (a double press) or is gone. A decided one can be flipped. */
   decide: (id: number, status: "active" | "rejected", by: string, at: number) => boolean;
   remove: (id: number) => void;
@@ -71,12 +75,14 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
     `UPDATE learnings
         SET content = $content, status = $status,
             notice_channel = CASE WHEN $status = 'pending' THEN '' ELSE notice_channel END,
-            notice_ts = CASE WHEN $status = 'pending' THEN '' ELSE notice_ts END
+            notice_ts = CASE WHEN $status = 'pending' THEN '' ELSE notice_ts END,
+            notice_fingerprint = CASE WHEN $status = 'pending' THEN '' ELSE notice_fingerprint END
       WHERE id = $id`,
   );
   const noticeStmt = db.query(
-    "UPDATE learnings SET notice_channel = $channel, notice_ts = $ts WHERE id = $id",
+    "UPDATE learnings SET notice_channel = $channel, notice_ts = $ts, notice_fingerprint = $fingerprint WHERE id = $id",
   );
+  const fingerprintStmt = db.query("UPDATE learnings SET notice_fingerprint = $fingerprint WHERE id = $id");
   const decideStmt = db.query(
     `UPDATE learnings SET status = $status, decided_by = $by, decided_at = $at
       WHERE id = $id AND status != $status`,
@@ -105,8 +111,11 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
     update: (id, content, status) => {
       updateStmt.run({ $id: id, $content: content, $status: status });
     },
-    setNotice: (id, channel, ts) => {
-      noticeStmt.run({ $id: id, $channel: channel, $ts: ts });
+    setNotice: (id, channel, ts, fingerprint = "") => {
+      noticeStmt.run({ $id: id, $channel: channel, $ts: ts, $fingerprint: fingerprint });
+    },
+    setNoticeFingerprint: (id, fingerprint) => {
+      fingerprintStmt.run({ $id: id, $fingerprint: fingerprint });
     },
     decide: (id, status, by, at) =>
       Number(decideStmt.run({ $id: id, $status: status, $by: by, $at: at }).changes) > 0,

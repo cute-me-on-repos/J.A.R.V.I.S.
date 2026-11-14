@@ -111,6 +111,23 @@ export const migrate = (db: Database): void => {
   migrateRoles37(db);
   migrateJourneys(db);
   migrateLearningSource(db);
+  migrateLearningNoticeFingerprint(db);
+};
+
+/**
+ * Migration v40: the fingerprint of a learning's notice as last rendered.
+ *
+ * `notice_fingerprint` is `domain/noticeFingerprint.ts` over the blocks the bot
+ * last posted or rewrote, so a press is only honoured on that exact message.
+ * Empty for rows whose notice predates this (or was settled without buttons).
+ */
+const migrateLearningNoticeFingerprint = (db: Database): void => {
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(learnings)").all().map((c) => c.name);
+  if (!cols.includes("notice_fingerprint")) db.exec("ALTER TABLE learnings ADD COLUMN notice_fingerprint TEXT NOT NULL DEFAULT ''");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 40) db.exec("PRAGMA user_version = 40;");
 };
 
 /**

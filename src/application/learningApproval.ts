@@ -28,6 +28,7 @@ import {
   type LearningSource,
 } from "../domain/learning.ts";
 import { SIGNATURES } from "../domain/messageFooter.ts";
+import { noticeFingerprint } from "../domain/noticeFingerprint.ts";
 import type { Learning } from "../domain/types.ts";
 import type { LearningsRepo } from "../infrastructure/db/learningsRepo.ts";
 import type { Clock } from "./ports.ts";
@@ -112,7 +113,7 @@ const askOwner = async (deps: LearningApprovalDeps, l: Learning, by: string): Pr
         .catch(logAndIgnore("learning approval thread post"))
     : undefined;
   if (threaded) {
-    deps.learnings.setNotice(l.id, threaded.channel, threaded.ts);
+    deps.learnings.setNotice(l.id, threaded.channel, threaded.ts, threaded.fingerprint);
     return;
   }
   const link =
@@ -122,7 +123,7 @@ const askOwner = async (deps: LearningApprovalDeps, l: Learning, by: string): Pr
   const notice = await deps.slack
     .postDmInteractive(deps.ownerSlackId, approvalText(l.id, l.content, by, link), actions, SIGNATURES.learning)
     .catch(logAndIgnore("learning approval post"));
-  if (notice) deps.learnings.setNotice(l.id, notice.channel, notice.ts);
+  if (notice) deps.learnings.setNotice(l.id, notice.channel, notice.ts, notice.fingerprint);
   else deps.log?.(`learning #${l.id} pending, the owner DM did not go out`);
 };
 
@@ -193,14 +194,18 @@ const settle = async (
   const text = settledText(decision === "approve" ? "approved" : "rejected", l.id, l.content, by);
   const { noticeChannel: channel, noticeTs: ts } = l;
   if (!deps.slack.updateInteractive) {
+    deps.learnings.setNoticeFingerprint(l.id, "");
     await deps.slack.settleInteractive(channel, ts, text, SIGNATURES.learning).catch(logAndIgnore("learning approval settle"));
     return;
   }
   const names = await deps.slack.resolveNames?.([by]).catch(logAndIgnore("learning decider name"));
   const who = (names?.[by] ?? "").trim() || "the owner";
-  await deps.slack
+  // Whatever happens next, the message no longer matches the old fingerprint: clear it first, set the new one once the rewrite landed.
+  deps.learnings.setNoticeFingerprint(l.id, "");
+  const fingerprint = await deps.slack
     .updateInteractive(channel, ts, text, decidedActions(l.id, decision, who.slice(0, 40), canFlip), SIGNATURES.learning)
     .catch(logAndIgnore("learning approval settle"));
+  if (fingerprint) deps.learnings.setNoticeFingerprint(l.id, fingerprint);
 };
 
 /**
@@ -272,6 +277,8 @@ export const decideLearningPress = async (
     edited?: boolean;
     /** The texts the pressed message shows (its blocks), as Slack sent them back. */
     shown?: readonly string[];
+    /** The pressed message's blocks as Slack sent them back: compared whole against what was last rendered. */
+    blocks?: readonly unknown[];
   },
 ): Promise<PressOutcome> => {
   if (press.actionId !== LEARNING_APPROVE_ACTION && press.actionId !== LEARNING_REJECT_ACTION) return { kind: "unknown" };
@@ -284,8 +291,13 @@ export const decideLearningPress = async (
   const shown = (press.shown ?? []).join("\n");
   const showsTheFact = shown.includes(core) || shown.includes(`&gt; ${core.slice(2)}`);
   const fromTheDm = !!l.noticeChannel && !!l.noticeTs && press.channel === l.noticeChannel && press.messageTs === l.noticeTs;
-  // Once decided, the notice is our own chat.update, which Slack may flag as edited: the fact on show still has to match.
-  if (!fromTheDm || (press.edited && l.status === "pending") || !showsTheFact) {
+  // The whole message, not the fact in it: text, buttons (ids, labels) and block layout must be what was last rendered.
+  // An empty stored fingerprint is a notice posted before this check existed; only a still-pending one may rely on the
+  // old checks (a decided notice only has buttons because it was rewritten, which stores one).
+  const sameMessage = l.noticeFingerprint
+    ? press.blocks !== undefined && noticeFingerprint(press.blocks) === l.noticeFingerprint
+    : l.status === "pending" && !press.edited;
+  if (!fromTheDm || !sameMessage || (press.edited && l.status === "pending") || !showsTheFact) {
     deps.log?.(`learning #${l.id} press refused: not the untouched approval DM`);
     return { kind: "refused", why: "forged", id: l.id };
   }

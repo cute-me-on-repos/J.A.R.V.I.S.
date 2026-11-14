@@ -150,3 +150,25 @@ describe("Slack proxy policy", () => {
     }
   });
 });
+
+describe("chat.update on an approval notice", () => {
+  const scope = { channel: "C0TEST00001", threadTs: "1700000000.000100" };
+  const isNotice = (channel: string, ts: string) => channel === "C0TEST00001" && ts === "55.5";
+
+  test("is refused when the message is a stored notice, even in the turn's own channel", () => {
+    const call = checkSlackCall("chat.update", { channel: scope.channel, ts: "55.5", text: "Dismiss" }, scope, isNotice);
+    expect(call).toMatchObject({ ok: false, status: 403 });
+    expect(!call.ok && call.error).toContain("message_not_allowed");
+  });
+
+  test("the turn's own messages are still editable", () => {
+    const params = { channel: scope.channel, ts: "56.6", text: "progress 2/3" };
+    const call = checkSlackCall("chat.update", params, scope, isNotice);
+    expect(call.ok && call.params).toEqual(params);
+  });
+
+  test("other writes and reads on a notice's ts are not affected", () => {
+    expect(checkSlackCall("reactions.add", { channel: scope.channel, timestamp: "55.5", name: "eyes" }, scope, isNotice).ok).toBe(true);
+    expect(checkSlackCall("conversations.replies", { channel: scope.channel, ts: "55.5" }, scope, isNotice).ok).toBe(true);
+  });
+});

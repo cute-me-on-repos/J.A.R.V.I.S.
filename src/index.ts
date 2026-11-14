@@ -132,6 +132,7 @@ import { runForBrain } from "./application/brainRun.ts";
 import { dispatchCommand, isQuietCommand, listCommandInfo } from "./application/commands.ts";
 import { createCommandTickets, refusalMessage } from "./application/commandTickets.ts";
 import { createSlackTickets } from "./application/slackTickets.ts";
+import { createNoticeLookup } from "./infrastructure/db/noticeLookup.ts";
 import { createSlackProxy } from "./application/slackProxy.ts";
 import { scrubSecretEnv } from "./domain/turnEnv.ts";
 import { createWorkerTickets, revokeOnWorkerEnd } from "./application/workerTickets.ts";
@@ -319,6 +320,8 @@ const main = async () => {
   const slackProxy = createSlackProxy({
     tickets: slackTickets,
     botToken: config.slackBotToken,
+    // A turn may not rewrite an approval notice: its buttons decide things.
+    isNotice: createNoticeLookup(db),
     log: (line) => console.error(`[slack-proxy] ${line}`),
   });
   // Scoped GitHub App tickets for Orca workers; revoked when `watch worker` sees the worker end.
@@ -894,7 +897,8 @@ const main = async () => {
       learnings,
       learningApproval,
       learningSource: (ticket) => {
-        const r = commandTickets.redeem(ticket);
+        // Read-only: recording a source must not spend one of the turn's command uses, nor turn a spent ticket into "no source".
+        const r = commandTickets.peek(ticket);
         return r.ok ? { channel: r.ctx.channel, threadTs: r.ctx.threadTs ?? r.ctx.messageTs ?? "" } : undefined;
       },
       kitViews,

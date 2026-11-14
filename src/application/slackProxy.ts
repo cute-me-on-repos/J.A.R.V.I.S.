@@ -10,7 +10,7 @@
  *
  * Nothing about a call's content is logged, only who was refused and why.
  */
-import { checkSlackCall, isAuditedMethod, isSlackFileUrl } from "../domain/slackProxy.ts";
+import { checkSlackCall, isAuditedMethod, isSlackFileUrl, type IsNotice } from "../domain/slackProxy.ts";
 import type { SlackTickets, SlackTicketRefusal } from "./slackTickets.ts";
 
 const SLACK_API = "https://slack.com/api/";
@@ -25,6 +25,8 @@ export type SlackProxyDeps = {
   tickets: SlackTickets;
   /** The bot's token. Held here and nowhere a turn can read. */
   botToken: string;
+  /** Approval notices the bot posted, which a turn may not `chat.update` (see `domain/slackProxy.ts`). */
+  isNotice?: IsNotice;
   fetchFn?: typeof fetch;
   log?: (line: string) => void;
 };
@@ -75,7 +77,7 @@ export const createSlackProxy = (deps: SlackProxyDeps): SlackProxy => {
     call: async ({ ticket, method, params }) => {
       const resolved = redeem(ticket);
       if (!resolved.ok) return failure(401, ticketError(resolved.reason, resolved.limit));
-      const checked = checkSlackCall(method, params, { channel: resolved.ctx.channel, threadTs: resolved.ctx.threadTs });
+      const checked = checkSlackCall(method, params, { channel: resolved.ctx.channel, threadTs: resolved.ctx.threadTs }, deps.isNotice);
       if (!checked.ok) {
         log(`slack proxy refused ${String(method)}: ${checked.error}`);
         return failure(checked.status, checked.error);

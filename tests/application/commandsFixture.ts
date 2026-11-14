@@ -9,7 +9,8 @@ import { type CommandDeps } from "../../src/application/commands.ts";
 import { adapterDepsOf } from "../../src/application/commands/shared.ts";
 import type { AllowedUser } from "../../src/domain/types.ts";
 import type { LlmPort } from "../../src/application/ports.ts";
-import type { SlackAdminPort, SlackMessage } from "../../src/application/slackAdmin.ts";
+import type { InteractiveAction, SlackAdminPort, SlackMessage } from "../../src/application/slackAdmin.ts";
+import { noticeFingerprint } from "../../src/domain/noticeFingerprint.ts";
 
 export const OWNER = "U0OWNER0001";
 
@@ -33,8 +34,20 @@ export type SlackCalls = {
   settled: { channel: string; ts: string; text: string }[];
   /** `updateInteractive`: a notice rewritten with its buttons kept, as `actionId:label`. */
   updated: { channel: string; ts: string; text: string; buttons: string[] }[];
+  /** The blocks each interactive message currently shows, by `channel:ts`, shaped as the real adapter writes them. */
+  blocks: Record<string, unknown[]>;
   removeError?: Error;
 };
+
+/** The blocks the real adapter posts for a notice: a section, its buttons, the signature footer. */
+export const noticeBlocks = (text: string, actions: readonly InteractiveAction[]): unknown[] => [
+  { type: "section", text: { type: "mrkdwn", text } },
+  {
+    type: "actions",
+    elements: actions.map((a) => ({ type: "button", action_id: a.actionId, text: { type: "plain_text", text: a.label }, value: a.value })),
+  },
+  { type: "context", elements: [{ type: "mrkdwn", text: "signature" }] },
+];
 
 export const fakeSlack = (calls: SlackCalls, thread: SlackMessage[] = []): SlackAdminPort => ({
   listConversations: async () => [],
@@ -55,12 +68,18 @@ export const fakeSlack = (calls: SlackCalls, thread: SlackMessage[] = []): Slack
   postDmInteractive: async (userId, text, actions) => {
     calls.posts.push({ channel: userId, text });
     calls.buttons.push(...actions.map((a) => `${a.actionId}:${a.value}`));
-    return { channel: userId, ts: `notice-${calls.posts.length}` };
+    const blocks = noticeBlocks(text, actions);
+    const ts = `notice-${calls.posts.length}`;
+    calls.blocks[`${userId}:${ts}`] = blocks;
+    return { channel: userId, ts, fingerprint: noticeFingerprint(blocks) };
   },
   postInteractive: async (channel, text, actions, threadTs, by) => {
     calls.posts.push({ channel, text, threadTs, ...(by ? { by } : {}) });
     calls.buttons.push(...actions.map((a) => `${a.actionId}:${a.value}`));
-    return { channel, ts: `interactive-${calls.posts.length}` };
+    const blocks = noticeBlocks(text, actions);
+    const ts = `interactive-${calls.posts.length}`;
+    calls.blocks[`${channel}:${ts}`] = blocks;
+    return { channel, ts, fingerprint: noticeFingerprint(blocks) };
   },
   postMenu: async () => undefined,
   settleInteractive: async (channel, ts, text) => {
@@ -68,6 +87,9 @@ export const fakeSlack = (calls: SlackCalls, thread: SlackMessage[] = []): Slack
   },
   updateInteractive: async (channel, ts, text, actions) => {
     calls.updated.push({ channel, ts, text, buttons: actions.map((a) => `${a.actionId}:${a.label}`) });
+    const blocks = noticeBlocks(text, actions);
+    calls.blocks[`${channel}:${ts}`] = blocks;
+    return noticeFingerprint(blocks);
   },
   addReactions: async (_c, _ts, names) => {
     calls.reactions.push(...names);
@@ -106,7 +128,7 @@ export const everyoneHasToken = (): ClaudeTokenPort => ({
 
 export const build = (thread: SlackMessage[] = [threadMsg("hi there")]): CommandDeps => {
   db = openDatabase(":memory:");
-  slackCalls = { posts: [], reactions: [], removed: [], buttons: [], settled: [], updated: [] };
+  slackCalls = { posts: [], reactions: [], removed: [], buttons: [], settled: [], updated: [], blocks: {} };
   const deps: CommandDeps = {
     users: createUserRepo(db),
     messages: createMessageRepo(db),

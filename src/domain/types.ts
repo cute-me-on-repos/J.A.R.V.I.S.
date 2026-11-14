@@ -76,6 +76,8 @@ export type Learning = {
   /** Where the owner's Approve / Reject message lives, so a press can be checked against it. */
   readonly noticeChannel: string;
   readonly noticeTs: string;
+  /** `noticeFingerprint` of the notice as last rendered: a press is honoured only on a message that still matches it. Empty for a notice that predates it or has no buttons. */
+  readonly noticeFingerprint: string;
   /** The turn that proposed it (empty when unknown): where the owner's notice goes and what it links back to. */
   readonly sourceChannel: string;
   readonly sourceThreadTs: string;

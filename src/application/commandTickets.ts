@@ -54,6 +54,12 @@ export type CommandTickets = {
   issue: (ctx: TicketContext) => string;
   /** Resolve and spend a use. */
   redeem: (token: string) => TicketResult;
+  /**
+   * Resolve without spending a use. For a read that only needs to know whose turn
+   * this is. A spent ticket still resolves: its budget is for commands, not for
+   * saying where a turn ran. Unknown and expired tickets refuse as `redeem` does.
+   */
+  peek: (token: string) => TicketResult;
 };
 
 type Entry = TicketContext & { expiresAt: number; used: number };
@@ -69,6 +75,26 @@ export const createCommandTickets = (
     for (const [token, e] of live) if (e.expiresAt <= now) live.delete(token);
   };
 
+  const resolve = (token: string, spend: boolean): TicketResult => {
+    const entry = live.get(token);
+    if (!entry) return { ok: false, reason: "unknown", limit: uses };
+    const now = clock();
+    if (entry.expiresAt <= now) {
+      live.delete(token);
+      return { ok: false, reason: "expired", limit: uses };
+    }
+    // Kept until it expires rather than deleted on the last use, so the next
+    // attempt can say "you have spent this turn's budget" instead of the
+    // indistinguishable "I have never heard of that ticket".
+    if (spend && entry.used >= uses) return { ok: false, reason: "spent", limit: uses };
+    if (spend) entry.used += 1;
+    return {
+      ok: true,
+      ctx: { actor: entry.actor, channel: entry.channel, threadTs: entry.threadTs, messageTs: entry.messageTs },
+      left: Math.max(0, uses - entry.used),
+    };
+  };
+
   return {
     issue: (ctx) => {
       const now = clock();
@@ -77,25 +103,8 @@ export const createCommandTickets = (
       live.set(token, { ...ctx, expiresAt: now + TICKET_TTL_MS, used: 0 });
       return token;
     },
-    redeem: (token) => {
-      const entry = live.get(token);
-      if (!entry) return { ok: false, reason: "unknown", limit: uses };
-      const now = clock();
-      if (entry.expiresAt <= now) {
-        live.delete(token);
-        return { ok: false, reason: "expired", limit: uses };
-      }
-      // Kept until it expires rather than deleted on the last use, so the next
-      // attempt can say "you have spent this turn's budget" instead of the
-      // indistinguishable "I have never heard of that ticket".
-      if (entry.used >= uses) return { ok: false, reason: "spent", limit: uses };
-      entry.used += 1;
-      return {
-        ok: true,
-        ctx: { actor: entry.actor, channel: entry.channel, threadTs: entry.threadTs, messageTs: entry.messageTs },
-        left: uses - entry.used,
-      };
-    },
+    redeem: (token) => resolve(token, true),
+    peek: (token) => resolve(token, false),
   };
 };
 
