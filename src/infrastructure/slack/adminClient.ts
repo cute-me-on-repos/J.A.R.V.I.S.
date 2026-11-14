@@ -73,9 +73,9 @@ const mapPool = async <T, R>(items: T[], n: number, fn: (item: T) => Promise<R>)
 
 export const createSlackAdmin = (client: WebClient, clock: () => number = Date.now): SlackAdminPort => {
   const nameCache = new Map<string, string>();
-  /** The grey signature line, stamped now: every post and edit carries one. */
-  const footer = (by?: string, usage?: FooterUsage): string =>
-    footerLine(by ?? SIGNATURES.jarvis, clock(), usage ? usageFooter(usage) : undefined);
+  /** The grey signature line every post carries. Stamped "updated" only for an edit. */
+  const footer = (by?: string, usage?: FooterUsage, edited = false): string =>
+    footerLine(by ?? SIGNATURES.jarvis, edited ? clock() : undefined, usage ? usageFooter(usage) : undefined);
   let botUserId: string | undefined;
 
   const getBotUserId = async (): Promise<string> => {
@@ -224,7 +224,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       // A refused markdown block is retried as sections; a refused rewrite
       // (a stopped stream's block_mismatch, say) still edits the words,
       // text-only, as before.
-      const line = footer(by);
+      const line = footer(by, undefined, true);
       await client.chat
         .update({ channel, ts, ...signedText(text, line) })
         .catch(() => client.chat.update({ channel, ts, ...signedSections(text, line) }))
@@ -404,7 +404,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
     settleInteractive: async (channel, ts, text, by) => {
       // Drop the buttons so a decided request cannot be clicked again.
       await client.chat
-        .update({ channel, ts, ...signedText(text, footer(by)) })
+        .update({ channel, ts, ...signedText(text, footer(by, undefined, true)) })
         // Refused: the text as unsigned sections (still no buttons), and
         // failing that a text-only edit, so at least the words change.
         .catch(() =>

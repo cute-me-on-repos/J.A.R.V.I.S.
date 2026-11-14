@@ -5,11 +5,13 @@
  * Asked for by Kai after a thread filled with messages from Jarvis, the inner
  * child, a watch firing and a reminder, all under the same bot name - there was
  * no telling which part of the process had said what. So every message carries
- * a signature, and since Jarvis edits its own messages later (a turn tidied, a
- * drain notice counted down, a question settled) it also says when that last
- * happened.
+ * a signature, and since Jarvis edits its own messages later (a drain notice
+ * counted down, a question settled) it also says when that last happened.
  *
- * One line, always: `Jarvis · <usage, when a turn reported it> · updated <time>`.
+ * One line: `Jarvis · <usage, when a turn reported it>`, plus ` · updated <time>`
+ * only once the message has been edited after it was first sent (Kai: a fresh
+ * post saying "updated" is noise). Tidying a streamed reply when its turn
+ * finishes is still the first send, so it carries no stamp either.
  * The time is a Slack date token, so each reader sees it in their own timezone;
  * the fallback (for clients that cannot render it) is the host clock with its
  * offset.
@@ -69,10 +71,13 @@ const STAMP = /updated <!date\^\d+\^[^|>]*\|[^>]*>/;
 
 /**
  * The whole line: signature, then what the turn reported (model, tokens, cost,
- * time), then when it was last written.
+ * time), then - for an edit only, so only when `editedMs` is given - when it
+ * was last written.
  */
-export const footerLine = (by: string, ms: number, detail?: string, offsetMin?: number): string =>
-  [by.trim() || SIGNATURES.jarvis, detail?.trim(), updatedStamp(ms, offsetMin)].filter(Boolean).join(" · ");
+export const footerLine = (by: string, editedMs?: number, detail?: string, offsetMin?: number): string =>
+  [by.trim() || SIGNATURES.jarvis, detail?.trim(), editedMs === undefined ? undefined : updatedStamp(editedMs, offsetMin)]
+    .filter(Boolean)
+    .join(" · ");
 
 /** The footer as its own context block. */
 export const footerBlock = (line: string): Block => ({
