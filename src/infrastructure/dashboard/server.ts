@@ -298,10 +298,10 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           return Response.json(await app.commandLog());
         case "/api/usage":
           return Response.json(await app.usage(q("hours")));
-        case "/api/conversations":
-          return Response.json(await app.conversations(q("cursor"), q("limit")));
-        case "/api/conversation":
-          return Response.json(await app.conversation(q("channel") ?? "", q("before"), q("limit")));
+        case "/api/memory/channels":
+          return Response.json(app.memoryChannels());
+        case "/api/memory/threads":
+          return Response.json(app.memoryThreads(q("channel")));
         case "/api/stats":
           return Response.json(await app.stats(q("days")));
         case "/api/slack/members": {
@@ -394,7 +394,7 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           app.resetPrompt();
           return ok();
         case "/api/conversation/clear":
-          app.clearConversation(body.channel);
+          app.clearConversation(body.channel, body.threadTs);
           return ok();
         case "/api/commands/toggle":
           return reply(app.toggleCommand(body.name, body.enabled));

@@ -10,7 +10,6 @@ const NAV: { group: string; items: { to: string; label: string; icon: NavIconNam
     group: "Workspace",
     items: [
       { to: "/", label: "Overview", icon: "overview", end: true },
-      { to: "/conversations", label: "Conversations", icon: "conversations" },
       { to: "/console", label: "Console", icon: "console" },
     ],
   },

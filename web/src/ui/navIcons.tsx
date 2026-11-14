@@ -13,7 +13,6 @@ export const NAV_ICONS = {
       <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5" />
     </>
   ),
-  conversations: <path d="M20.5 11.5a8 8 0 0 1-11.7 7.1L4 19.8l1.2-4.3A8 8 0 1 1 20.5 11.5Z" />,
   console: (
     <>
       <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />

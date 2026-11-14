@@ -17,7 +17,7 @@ import { isKnownPermission, isOwnerOnlyPermission } from "../domain/permissions.
 import { seededBook, type SeedInput } from "../domain/roleSeed.ts";
 import { addMcpServer, catalogueFor, defaultRoleOf, deleteRole, renameRole, setDefaultRole, type RoleEditDeps } from "./roles.ts";
 import type { RoleRepo } from "../infrastructure/db/roleRepo.ts";
-import { labelMentions, mentionedIds, userLabel } from "../domain/slackNames.ts";
+import { userLabel } from "../domain/slackNames.ts";
 import type { NameResolver } from "./nameResolver.ts";
 import { KIT_MODAL_PREFIX, viewProblem, type KitView } from "../domain/kitEvents.ts";
 import { SETTING_KEYS } from "../infrastructure/db/settingsRepo.ts";
@@ -87,22 +87,10 @@ export type DashboardPorts = {
     readonly remove: (slackId: string) => void;
   };
   readonly messages: {
-    readonly channels: () => readonly { readonly channelId: string }[];
+    readonly channels: () => readonly { readonly channelId: string; readonly count: number; readonly lastAt: number }[];
     readonly count: () => number;
-    readonly channelsPage: (
-      cursor: string | undefined,
-      limit: number,
-    ) => { readonly channels: readonly { readonly channelId: string }[]; readonly nextCursor?: string };
-    /** Turns older than message id `before` (newest when absent), oldest-first. */
-    readonly pageForChannel: (
-      channelId: string,
-      before: number | undefined,
-      limit: number,
-    ) => {
-      readonly messages: readonly { readonly slackUserId: string; readonly content: string }[];
-      readonly nextBefore?: number;
-    };
-    readonly countForChannel: (channelId: string) => number;
+    readonly threads: (channelId: string) => readonly { readonly threadTs: string; readonly count: number; readonly lastAt: number }[];
+    readonly clearThread: (channelId: string, threadTs: string) => unknown;
     readonly clearChannel: (channelId: string) => unknown;
   };
   readonly learnings: {
@@ -150,10 +138,6 @@ export type DashboardPorts = {
 };
 
 const SLACK_ID = /^[UW][A-Z0-9]+$/;
-/** Turns per page of a conversation, and its ceiling when the page asks for more. */
-const CONVERSATION_PAGE = 50;
-const CHANNEL_PAGE = 30;
-const PAGE_MAX = 200;
 const MEMBER_RESULTS = 8;
 const STATS_TOP = 8;
 const COMMAND_LOG_LIMIT = 200;
@@ -168,16 +152,6 @@ const parseDisabled = (v: string | undefined): Set<string> =>
   new Set([...parseCsv(v)].map(currentCommandName).filter((c): c is string => !!c));
 
 const text = (v: unknown): string => String(v ?? "").trim();
-/** A page size from a query string, clamped; anything unreadable means `fallback`. */
-export const pageSize = (v: string | null | undefined, fallback: number): number => {
-  const n = Math.floor(Number(v));
-  return Number.isFinite(n) && n > 0 ? Math.min(n, PAGE_MAX) : fallback;
-};
-/** A message-id cursor, or undefined for "start at the newest". */
-const beforeId = (v: string | null | undefined): number | undefined => {
-  const n = Number(v);
-  return v && Number.isInteger(n) && n > 0 ? n : undefined;
-};
 const BAD_ROLE = "Pick one of the roles on the Roles page";
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const gateError = (r: { readonly violations?: readonly string[] }, fallback: string): Refusal =>
@@ -628,48 +602,28 @@ export const createDashboardService = (p: DashboardPorts) => {
   resetPrompt: () => p.settings.remove(SETTING_KEYS.systemPrompt),
 
   /**
-   * One page of stored conversations, most recently active first, each named:
-   * `#channel (C…)`, a DM as the person. `cursor` is the previous page's
-   * `nextCursor`; the page scrolls, so only one page is ever named at a time.
+   * What the bot's DB (the `messages` store) holds, per channel: the badges the
+   * console draws beside each Slack channel. A channel absent here has nothing
+   * stored - never talked to, or cleared.
    */
-  conversations: async (cursor?: string | null, limit?: string | null) => {
-    const page = p.messages.channelsPage(cursor || undefined, pageSize(limit, CHANNEL_PAGE));
-    const labels = await conversationLabels(page.channels.map((c) => c.channelId));
-    return {
-      channels: page.channels.map((c) => ({ ...c, label: labels[c.channelId] })),
-      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-    };
+  memoryChannels: () => p.messages.channels().map(({ channelId, count, lastAt }) => ({ channelId, count, lastAt })),
+
+  /** The same for one channel's threads (keyed by the thread root's ts). Turns outside a thread are only in the channel count. */
+  memoryThreads: (channelIn: unknown) => {
+    const channel = text(channelIn);
+    return channel ? p.messages.threads(channel) : [];
   },
 
   /**
-   * One page of a conversation's turns, oldest-first, every author - and
-   * everyone mentioned - named as well as id'd. No `before` is the newest page;
-   * `nextBefore` is what to pass for the one above it, absent at the top.
+   * Forget stored turns - the bot's memory only, Slack is never touched. With a
+   * `threadTs` just that thread; without, the whole channel (every thread).
    */
-  conversation: async (channel: string, before?: string | null, limit?: string | null) => {
-    const page = channel
-      ? p.messages.pageForChannel(channel, beforeId(before), pageSize(limit, CONVERSATION_PAGE))
-      : { messages: [] };
-    const messages = page.messages;
-    const [labels, people] = await Promise.all([
-      conversationLabels(channel ? [channel] : []),
-      userLabels(messages.flatMap((m) => [m.slackUserId, ...mentionedIds(m.content)])),
-    ]);
-    return {
-      channel: { id: channel, label: labels[channel] ?? `unknown (${channel})` },
-      total: channel ? p.messages.countForChannel(channel) : 0,
-      ...(page.nextBefore ? { nextBefore: page.nextBefore } : {}),
-      messages: messages.map((m) => ({
-        ...m,
-        content: labelMentions(m.content, people),
-        userLabel: people[m.slackUserId] ?? userLabel(m.slackUserId),
-      })),
-    };
-  },
-
-  clearConversation: (channelIn: unknown) => {
+  clearConversation: (channelIn: unknown, threadIn?: unknown) => {
     const channel = text(channelIn);
-    if (channel) p.messages.clearChannel(channel);
+    const thread = text(threadIn);
+    if (!channel) return;
+    if (thread) p.messages.clearThread(channel, thread);
+    else p.messages.clearChannel(channel);
   },
 
   commands: () => ({

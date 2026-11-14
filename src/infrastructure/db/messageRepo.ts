@@ -30,33 +30,18 @@ const toMessage = (row: Row): StoredMessage => ({
   ...(row.thread_ts ? { threadTs: row.thread_ts } : {}),
 });
 
-/** A channel summary for the dashboard's conversation browser. */
+/** A channel summary for the console's "in DB" badges. */
 export type ChannelSummary = {
   channelId: string;
   count: number;
   lastAt: number;
 };
 
-/** A page of turns, oldest-first, and where the next (older) page starts. */
-export type MessagePage = {
-  messages: StoredMessage[];
-  /** Pass as `before` for the page above this one; absent at the very first turn. */
-  nextBefore?: number;
-};
-
-/** A page of channels, most-recently-active first, and the cursor for the next one. */
-export type ChannelPage = {
-  channels: ChannelSummary[];
-  nextCursor?: string;
-};
-
-/** `<lastAt>:<channelId>` - the last row of a page, which the next page starts after. */
-export const channelCursor = (c: ChannelSummary): string => `${c.lastAt}:${c.channelId}`;
-const parseChannelCursor = (cursor: string | undefined): { lastAt: number; channelId: string } | undefined => {
-  const at = cursor?.indexOf(":") ?? -1;
-  if (!cursor || at < 1) return undefined;
-  const lastAt = Number(cursor.slice(0, at));
-  return Number.isFinite(lastAt) ? { lastAt, channelId: cursor.slice(at + 1) } : undefined;
+/** One thread's stored turns - the thread root's ts is the key the bot's memory uses. */
+export type ThreadSummary = {
+  threadTs: string;
+  count: number;
+  lastAt: number;
 };
 
 export type MessageRepo = {
@@ -72,16 +57,10 @@ export type MessageRepo = {
   count: () => number;
   /** Distinct channels with a turn count, most-recently-active first. */
   channels: () => ChannelSummary[];
-  /** One page of `channels()`, continuing after `cursor` (from the previous page's `nextCursor`). */
-  channelsPage: (cursor: string | undefined, limit: number) => ChannelPage;
-  /**
-   * Up to `limit` turns of a channel older than message id `before` (newest
-   * page when absent), returned oldest-first - one screen of a conversation,
-   * read upwards.
-   */
-  pageForChannel: (channelId: string, before: number | undefined, limit: number) => MessagePage;
-  /** How many turns a channel holds. */
-  countForChannel: (channelId: string) => number;
+  /** Distinct threads of one channel with a stored turn, most-recently-active first. Turns outside any thread are not listed. */
+  threads: (channelId: string) => ThreadSummary[];
+  /** Forget one thread's turns only (channel-level turns and other threads stay). Returns how many went. */
+  clearThread: (channelId: string, threadTs: string) => number;
   /**
    * Threads whose newest stored turn is the bot's, written between `since` and
    * `before` (ms), newest first, with the person that thread last heard from.
@@ -126,45 +105,20 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
      FROM messages GROUP BY channel_id ORDER BY last_at DESC`,
   );
 
-  type ChannelRow = { channel_id: string; n: number; last_at: number };
-  const channelsFirstStmt = db.query<ChannelRow, [number]>(
-    `SELECT channel_id, COUNT(*) AS n, MAX(created_at) AS last_at
-     FROM messages GROUP BY channel_id ORDER BY last_at DESC, channel_id DESC LIMIT ?`,
+  const threadsStmt = db.query<{ thread_ts: string; n: number; last_at: number }, [string]>(
+    `SELECT thread_ts, COUNT(*) AS n, MAX(created_at) AS last_at
+     FROM messages WHERE channel_id = ? AND thread_ts != ''
+     GROUP BY thread_ts ORDER BY last_at DESC, thread_ts DESC`,
   );
-  const channelsAfterStmt = db.query<ChannelRow, [number, number, string, number]>(
-    `SELECT channel_id, COUNT(*) AS n, MAX(created_at) AS last_at
-     FROM messages GROUP BY channel_id
-     HAVING last_at < ?1 OR (last_at = ?2 AND channel_id < ?3)
-     ORDER BY last_at DESC, channel_id DESC LIMIT ?4`,
-  );
-  const pageStmt = db.query<Row, [string, number, number]>(
-    `SELECT * FROM messages WHERE channel_id = ? AND id < ? ORDER BY id DESC LIMIT ?`,
-  );
-  const channelCountStmt = db.query<{ n: number }, [string]>(
-    "SELECT COUNT(*) AS n FROM messages WHERE channel_id = ?",
-  );
-  const toSummary = (r: ChannelRow): ChannelSummary => ({ channelId: r.channel_id, count: r.n, lastAt: r.last_at });
+  const clearThreadStmt = db.query("DELETE FROM messages WHERE channel_id = $channelId AND thread_ts = $threadTs");
 
   return {
-    channelsPage: (cursor, limit) => {
-      const size = Math.max(1, limit);
-      const after = parseChannelCursor(cursor);
-      // One extra row says whether there is a next page without a COUNT.
-      const rows = after
-        ? channelsAfterStmt.all(after.lastAt, after.lastAt, after.channelId, size + 1)
-        : channelsFirstStmt.all(size + 1);
-      const channels = rows.slice(0, size).map(toSummary);
-      const last = channels[channels.length - 1];
-      return rows.length > size && last ? { channels, nextCursor: channelCursor(last) } : { channels };
+    threads: (channelId) =>
+      threadsStmt.all(channelId).map((r) => ({ threadTs: r.thread_ts, count: r.n, lastAt: r.last_at })),
+    clearThread: (channelId, threadTs) => {
+      if (!threadTs) return 0;
+      return Number(clearThreadStmt.run({ $channelId: channelId, $threadTs: threadTs }).changes);
     },
-    pageForChannel: (channelId, before, limit) => {
-      const size = Math.max(1, limit);
-      const rows = pageStmt.all(channelId, before ?? Number.MAX_SAFE_INTEGER, size + 1);
-      const messages = rows.slice(0, size).map(toMessage).reverse();
-      const oldest = messages[0];
-      return rows.length > size && oldest ? { messages, nextBefore: oldest.id } : { messages };
-    },
-    countForChannel: (channelId) => channelCountStmt.get(channelId)?.n ?? 0,
     endedOnBot: (since, before, limit) =>
       endedStmt.all(since, before, Math.max(1, limit)).flatMap((r) =>
         r.user_id ? [{ channelId: r.channel_id, threadTs: r.thread_ts, lastAt: r.created_at, slackUserId: r.user_id }] : [],
