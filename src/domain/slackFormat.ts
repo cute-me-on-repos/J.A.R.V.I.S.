@@ -113,7 +113,10 @@ export const toSlackMarkdown = (text: string): string => {
     .replace(/\]\([^)\s]*\)/g, stash)
     .replace(BOLD, "**$1**")
     .replace(STRIKE, "~~$1~~");
-  return out.replace(/\u0000(\d+)\u0000/g, (_, i: string) => held[Number(i)] ?? "");
+  // A held entry can hold an earlier one (`<url|`code`>`), so restore nested
+  // placeholders too. An entry only ever holds lower indexes, so this ends.
+  const restore = (s: string): string => s.replace(/\u0000(\d+)\u0000/g, (_, i: string) => restore(held[Number(i)] ?? ""));
+  return restore(out);
 };
 
 /**

@@ -20,6 +20,12 @@ describe("toSlackMarkdown", () => {
     ["escaped", "\\*x*", "\\*x*"],
   ];
   for (const [name, input, want] of cases) test(name, () => expect(toSlackMarkdown(input)).toBe(want));
+  test("a link with a code label comes back whole, never as placeholder bytes", () => {
+    const out = toSlackMarkdown("see <https://x.io/a|`file.ts`> *now* and `<b|`");
+    expect(out).toBe("see <https://x.io/a|`file.ts`> **now** and `<b|`");
+    expect(out).not.toContain("\u0000");
+  });
+
   test("idempotent", () => {
     const once = toSlackMarkdown("*a* ~b~ **c**");
     expect(toSlackMarkdown(once)).toBe(once);
