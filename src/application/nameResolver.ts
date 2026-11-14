@@ -26,6 +26,8 @@ export type NameResolver = {
   readonly userLabels: (ids: readonly string[]) => Promise<Record<string, string>>;
   /** Conversation id -> `#name (C…)` / `@Person (D…)`. */
   readonly conversationLabels: (ids: readonly string[]) => Promise<Record<string, string>>;
+  /** Channel id -> bare name without `#` ("" for a DM, a group DM or an unknown channel). */
+  readonly channelNames: (ids: readonly string[]) => Promise<Record<string, string>>;
 };
 
 export const NAME_TTL_MS = 6 * 3_600_000;
@@ -96,6 +98,16 @@ export const createNameResolver = (opts: {
     return p;
   };
 
+  /** `conversations.info` for each id, `limit` at a time. */
+  const infosFor = async (ids: readonly string[]): Promise<(readonly [string, ConversationInfo | undefined])[]> => {
+    const infos: (readonly [string, ConversationInfo | undefined])[] = [];
+    for (let i = 0; i < ids.length; i += limit) {
+      const batch = ids.slice(i, i + limit);
+      infos.push(...(await Promise.all(batch.map(async (id) => [id, await conversation(id)] as const))));
+    }
+    return infos;
+  };
+
   return {
     userNames,
     userLabels: async (ids) => {
@@ -104,15 +116,17 @@ export const createNameResolver = (opts: {
     },
     conversationLabels: async (ids) => {
       const wanted = [...new Set(ids.filter(Boolean))];
-      const infos: (readonly [string, ConversationInfo | undefined])[] = [];
-      for (let i = 0; i < wanted.length; i += limit) {
-        const batch = wanted.slice(i, i + limit);
-        infos.push(...(await Promise.all(batch.map(async (id) => [id, await conversation(id)] as const))));
-      }
+      const infos = await infosFor(wanted);
       const partners = infos.map(([, i]) => (i?.kind === "im" ? i.userId : undefined)).filter((u): u is string => !!u);
       const names = partners.length ? await userNames(partners) : {};
       return Object.fromEntries(
         infos.map(([id, info]) => [id, conversationLabel(id, info, info?.userId ? names[info.userId] : undefined)]),
+      );
+    },
+    channelNames: async (ids) => {
+      const infos = await infosFor([...new Set(ids.filter(Boolean))]);
+      return Object.fromEntries(
+        infos.map(([id, info]) => [id, info && (info.kind === "channel" || info.kind === "group") ? (info.name?.trim().replace(/^#/, "") ?? "") : ""]),
       );
     },
   };

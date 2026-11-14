@@ -196,3 +196,27 @@ describe("every message the admin client writes is signed", () => {
     }
   });
 });
+
+describe("workspaceUrl", () => {
+  const withAuth = (url: string | undefined) => {
+    let calls = 0;
+    const client = {
+      auth: { test: async () => (calls++, { user_id: "UBOT", url }) },
+    } as unknown as WebClient;
+    return { admin: createSlackAdmin(client, () => NOW), calls: () => calls };
+  };
+
+  test("is the auth.test url without its trailing slash, asked of Slack once", async () => {
+    const { admin, calls } = withAuth("https://acme.slack.com/");
+    expect(await admin.workspaceUrl?.()).toBe("https://acme.slack.com");
+    expect(await admin.workspaceUrl?.()).toBe("https://acme.slack.com");
+    expect(calls()).toBe(1);
+  });
+
+  test("is undefined when Slack gave no url, and is asked again next time", async () => {
+    const { admin, calls } = withAuth(undefined);
+    expect(await admin.workspaceUrl?.()).toBeUndefined();
+    await admin.workspaceUrl?.();
+    expect(calls()).toBe(2);
+  });
+});

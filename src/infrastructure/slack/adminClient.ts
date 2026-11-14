@@ -77,6 +77,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
   const footer = (by?: string, usage?: FooterUsage, edited = false): string =>
     footerLine(by ?? SIGNATURES.jarvis, edited ? clock() : undefined, usage ? usageFooter(usage) : undefined);
   let botUserId: string | undefined;
+  let workspace: string | undefined;
 
   const getBotUserId = async (): Promise<string> => {
     if (botUserId) return botUserId;
@@ -216,6 +217,13 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       } catch {
         return undefined; // a link is a convenience, never a reason to fail
       }
+    },
+
+    workspaceUrl: async () => {
+      if (workspace) return workspace;
+      const auth = (await client.auth.test()) as { url?: string };
+      workspace = auth.url?.replace(/\/+$/, "") || undefined;
+      return workspace;
     },
 
     update: async (channel, ts, text, by) => {

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
+import { createThreadBriefRepo } from "../../src/infrastructure/db/threadBriefRepo.ts";
+import { tellPrompt } from "../../src/domain/tellPrompt.ts";
 import { migrate } from "../../src/infrastructure/db/schema.ts";
 import { createThreadSessionRepo } from "../../src/infrastructure/db/threadSessionRepo.ts";
 import { createLearningsRepo } from "../../src/infrastructure/db/learningsRepo.ts";
@@ -13,6 +15,7 @@ import { createRoleRepo } from "../../src/infrastructure/db/roleRepo.ts";
 import { seedRoles } from "../../src/application/roles.ts";
 import { listCommandInfo } from "../../src/application/commands.ts";
 import { createSlackProxy } from "../../src/application/slackProxy.ts";
+import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import { createSlackTickets } from "../../src/application/slackTickets.ts";
 
 const OWNER = "U0OWNER0001";
@@ -52,6 +55,15 @@ describe("dashboard static + api", () => {
   test("api needs no token (local, loopback-only)", async () => {
     const res = await build().dash.handle(api("/api/overview"));
     expect(res.status).toBe(200);
+  });
+
+  test("the Console's workspace endpoint answers the Slack workspace url, null without one, 503 without Slack", async () => {
+    const slack = (url?: string) => ({ workspaceUrl: async () => url }) as unknown as DashboardDeps["slack"];
+    const ok = await build({ slack: slack("https://acme.slack.com") }).dash.handle(api("/api/slack/workspace"));
+    expect(await ok.json()).toEqual({ url: "https://acme.slack.com" });
+    const none = await build({ slack: slack() }).dash.handle(api("/api/slack/workspace"));
+    expect(await none.json()).toEqual({ url: null });
+    expect((await build().dash.handle(api("/api/slack/workspace"))).status).toBe(503);
   });
 
   test("health responds", async () => {
@@ -628,6 +640,39 @@ describe("paging, stats and the Slack directory over HTTP", () => {
     expect(after.map((c) => c.channelId)).toEqual(["C2"]);
   });
 
+  test("memory/internal interleaves stored steer turns and briefs, read-only, scoped to a channel or thread", async () => {
+    const briefs = createThreadBriefRepo(openDatabase(":memory:"));
+    const { dash, messages } = build({ briefs });
+    messages.append({ channelId: "C1", slackUserId: "U9", role: "user", content: tellPrompt("U9", "ship it"), threadTs: "7.1" }, 30);
+    messages.append({ channelId: "C1", slackUserId: "U1", role: "user", content: "a real person typed this", threadTs: "7.1" }, 31);
+    messages.append({ channelId: "C1", slackUserId: "assistant", role: "assistant", content: "NO_REPLY", threadTs: "7.1" }, 32);
+    messages.append({ channelId: "C2", slackUserId: "U9", role: "user", content: tellPrompt("U9", "elsewhere"), threadTs: "7.1" }, 33);
+    briefs.add({ fromChannel: "D0", fromThread: "1.1", toChannel: "C1", toThread: "7.1", author: "U8", text: "note xoxb-1234567890-abcdefghij" }, 20);
+    briefs.add({ fromChannel: "D0", fromThread: "1.1", toChannel: "C1", toThread: "8.8", author: "U8", text: "other thread" }, 40);
+    const get = async (path: string) => dash.handle(api(path));
+    const all = (await (await get("/api/memory/internal?channel=C1")).json()) as { ok?: boolean; items: { id: string; kind: string; source: string; text: string; at: number; threadTs: string }[] };
+    expect(all.items.map((i) => [i.kind, i.source, i.text, i.at, i.threadTs])).toEqual([
+      ["brief", "U8", "note [redacted]", 20, "7.1"],
+      ["tell", "U9", "ship it", 30, "7.1"],
+      ["brief", "U8", "other thread", 40, "8.8"],
+    ]);
+    const one = (await (await get("/api/memory/internal?channel=C1&thread=8.8")).json()) as { items: { text: string }[] };
+    expect(one.items.map((i) => i.text)).toEqual(["other thread"]);
+    expect(((await (await get("/api/memory/internal?channel=C404")).json()) as { items: unknown[] }).items).toEqual([]);
+    expect((await get("/api/memory/internal")).status).toBe(400);
+    expect((await get("/api/memory/internal?channel=C1&thread=")).status).toBe(400);
+    // Read-only: no write verb reaches it.
+    expect((await dash.handle(postJson("/api/memory/internal", { channel: "C1" }))).status).toBe(404);
+    expect(messages.count()).toBe(4);
+  });
+
+  test("memory/internal works without a brief store (older wiring): steer turns only", async () => {
+    const { dash, messages } = build();
+    messages.append({ channelId: "C1", slackUserId: "U9", role: "user", content: tellPrompt("U9", "hi") }, 5);
+    const res = (await (await dash.handle(api("/api/memory/internal?channel=C1"))).json()) as { items: { kind: string }[] };
+    expect(res.items.map((i) => i.kind)).toEqual(["tell"]);
+  });
+
   test("the retired conversation routes are gone", async () => {
     const { dash } = build();
     expect((await dash.handle(api(`/api/conversations`))).status).toBe(404);
@@ -731,5 +776,55 @@ describe("dashboard roles over HTTP", () => {
   test("without a role store nothing can be saved", async () => {
     const res = await build().dash.handle(postJson("/api/roles/save", { name: "qa" }));
     expect(res.status).toBe(503);
+  });
+});
+
+describe("GET /api/slack/names", () => {
+  const wired = () => {
+    const asked = { users: [] as string[][], conversations: [] as string[] };
+    const slack = {
+      resolveNames: async (ids: readonly string[]) => {
+        asked.users.push([...ids]);
+        return Object.fromEntries(ids.filter((id) => id === "U1BBB").map((id) => [id, "Mai"]));
+      },
+      conversationInfo: async (id: string) => {
+        asked.conversations.push(id);
+        return id === "C1OPS" ? { kind: "channel" as const, name: "ops" } : id === "D1DM" ? { kind: "im" as const, userId: "U1BBB" } : undefined;
+      },
+    } as unknown as SlackAdminPort;
+    return { asked, dash: build({ slack }).dash };
+  };
+  const names = async (dash: ReturnType<typeof wired>["dash"], qs: string) => {
+    const res = await dash.handle(api(`/api/slack/names?${qs}`));
+    return { status: res.status, body: (await res.json()) as { users: Record<string, string>; channels: Record<string, string> } };
+  };
+
+  test("one request names every mention; unknown ids map to empty, a stored allowlist name wins", async () => {
+    const { dash, asked } = wired();
+    const { status, body } = await names(dash, `users=${OWNER},U1BBB,U9ZZZ&channels=C1OPS,D1DM,C9NONE`);
+    expect(status).toBe(200);
+    expect(body).toEqual({ users: { [OWNER]: "Kai", U1BBB: "Mai", U9ZZZ: "" }, channels: { C1OPS: "ops", D1DM: "", C9NONE: "" } });
+    // the owner is on the allowlist, so only the other two cost a users.info
+    expect(asked.users).toEqual([["U1BBB", "U9ZZZ"]]);
+  });
+
+  test("answers are cached: asking again does not call Slack", async () => {
+    const { dash, asked } = wired();
+    await names(dash, "users=U1BBB&channels=C1OPS");
+    await names(dash, "users=U1BBB&channels=C1OPS");
+    expect(asked.users).toHaveLength(1);
+    expect(asked.conversations).toEqual(["C1OPS"]);
+  });
+
+  test("malformed ids never reach Slack and an empty query is an empty answer", async () => {
+    const { dash, asked } = wired();
+    expect((await names(dash, "users=bad,<@U1BBB>,;drop&channels=%3Cx%3E")).body).toEqual({ users: {}, channels: {} });
+    expect((await names(dash, "")).body).toEqual({ users: {}, channels: {} });
+    expect(asked.users).toEqual([]);
+    expect(asked.conversations).toEqual([]);
+  });
+
+  test("503 when the Slack console is not configured", async () => {
+    expect((await build().dash.handle(api("/api/slack/names?users=U1BBB"))).status).toBe(503);
   });
 });
