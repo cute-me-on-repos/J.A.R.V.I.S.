@@ -252,7 +252,7 @@ No I/O, no frameworks. Just data shapes and functions of their inputs.
 - `adapter.ts`, `adapterCheck.ts` - memory as a checked, versioned directory (facts + skills) instead of an ever-growing list
 - `ciGate.ts` (domain) - CI verdict of a PR from its check rollup, what a CI-gate poll should do, the spec of a gate's watch row
 - `threadFollow.ts`, `followGate.ts` - which untagged thread messages the bot answers, and the pure rules of the gate in front of a followed thread (settings, bypass, batch windows, verdict parsing, the gate's prompt)
-- `bugReport.ts` - the internal `bug-report` command's pure parts: flag parsing, the Slack-link check, the fingerprint that dedupes, the owner's DM text, the `jv:bug-report:` button ids
+- `bugReport.ts` - the internal `bug-report` command's pure parts: flag parsing, the Slack-link check, the fingerprint that dedupes, the owner's DM text, the `jv:bug-report:` button ids (the prefix is code-handled: `application/bugReportApproval.ts` decides a press, owner only, on the stored notice channel/ts, and only an approve starts the fix turn)
 - `journey.ts` - the bot's own work log: statuses, flag parsing for the internal `journey` command (run only by the brain's own turn, never typed), the one-line and help text
 - `watch.ts`, `reminder.ts`, `loop.ts`, `selfUpdate.ts`, `runControl.ts`, `threadBackground.ts` - waits, reminders, draining restart, stopping a turn and the background agents its thread started
 - `stalePromise.ts`, `tellPrompt.ts` - the stale-promise rules (bilingual promise heuristic, the model's yes/no question, which threads may be nudged, the per-thread record) and the internal steer text shared by `tell` and the sweep

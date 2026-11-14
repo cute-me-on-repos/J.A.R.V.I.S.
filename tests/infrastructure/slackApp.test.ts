@@ -14,6 +14,8 @@ import {
 } from "../../src/infrastructure/slack/app.ts";
 import type { Streamer } from "../../src/infrastructure/slack/stream.ts";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
+import { createBugReportRepo } from "../../src/infrastructure/db/bugReportRepo.ts";
+import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
 import type { LlmPort, LlmStreamEvent } from "../../src/application/ports.ts";
@@ -1267,5 +1269,78 @@ describe("agent_session_stopped press", () => {
     expect(idles()).toHaveLength(0);
     bRun.done();
     expect(idles()).toHaveLength(1);
+  });
+});
+
+describe("bug report press listener", () => {
+  const NOTICE = { channel: "D0OWNER", ts: "300.3" };
+  const rig = () => {
+    const turns: Incoming[] = [];
+    const ephemeral: Record<string, unknown>[] = [];
+    const settled: string[] = [];
+    const bugDb = openDatabase(":memory:");
+    const bugReports = createBugReportRepo(bugDb);
+    const b = bugReports.add({ fingerprint: "f", threadLink: "https://acme.slack.com/archives/C1/p1", issue: "posted twice", summary: "", plan: "dedupe", reportedIn: "C1" }, 1);
+    bugReports.setNotice(b.id, NOTICE.channel, NOTICE.ts);
+    const slack = { settleInteractive: async (_c: string, _t: string, text: string) => void settled.push(text) } as unknown as SlackAdminPort;
+    const listeners = createKitListeners(undefined, async (m) => void turns.push(m), () => {}, undefined, { bugReports, slack, clock: () => 5, ownerSlackId: OWNER });
+    const client = { chat: { postMessage: async () => ({}), postEphemeral: async (a: Record<string, unknown>) => void ephemeral.push(a) } };
+    const press = (over: { user?: string; channel?: string; ts?: string; actionId?: string } = {}) =>
+      listeners.onBugReportPress({
+        ack: async () => {},
+        client,
+        body: { user: { id: over.user ?? OWNER }, channel: { id: over.channel ?? NOTICE.channel }, message: { ts: over.ts ?? NOTICE.ts } },
+        action: { action_id: over.actionId ?? "jv:bug-report:approve", type: "button", value: String(b.id) },
+      });
+    return { press, turns, ephemeral, settled, bugReports, id: b.id, listeners, client };
+  };
+
+  test("the owner's approve press settles the notice and starts the fix turn in its thread, as the owner", async () => {
+    const r = rig();
+    await r.press();
+    expect(r.bugReports.get(r.id)?.state).toBe("approved");
+    expect(r.settled).toHaveLength(1);
+    expect(r.turns).toHaveLength(1);
+    expect(r.turns[0]).toMatchObject({ channelId: NOTICE.channel, threadTs: NOTICE.ts, userId: OWNER });
+    expect(r.turns[0]?.text).toContain("approved by the owner");
+    expect(r.turns[0]?.text).toContain("dedupe");
+  });
+
+  test("the owner's reject press settles the notice and starts no turn", async () => {
+    const r = rig();
+    await r.press({ actionId: "jv:bug-report:reject" });
+    expect(r.bugReports.get(r.id)?.state).toBe("rejected");
+    expect(r.settled).toHaveLength(1);
+    expect(r.turns).toHaveLength(0);
+  });
+
+  test("a non-owner press, a wrong channel, a wrong ts and an already decided one each change nothing and start no turn", async () => {
+    const r = rig();
+    await r.press({ user: "U0OTHER" });
+    await r.press({ channel: "C1" });
+    await r.press({ ts: "999.9" });
+    expect(r.bugReports.get(r.id)?.state).toBe("pending");
+    expect(r.ephemeral).toHaveLength(3);
+    expect(r.settled).toHaveLength(0);
+    expect(r.turns).toHaveLength(0);
+    await r.press();
+    expect(r.turns).toHaveLength(1);
+    await r.press();
+    await r.press({ actionId: "jv:bug-report:reject" });
+    expect(r.bugReports.get(r.id)?.state).toBe("approved");
+    expect(r.turns).toHaveLength(1);
+    expect(r.ephemeral).toHaveLength(5);
+  });
+
+  test("the generic kit listener never turns a bug report press into a model turn", async () => {
+    const r = rig();
+    await r.listeners.onKitAction({
+      ack: async () => {},
+      client: r.client,
+      body: { user: { id: OWNER }, channel: { id: NOTICE.channel }, message: { ts: NOTICE.ts } },
+      action: { action_id: "jv:bug-report:approve", type: "button", value: String(r.id) },
+    });
+    expect(r.turns).toHaveLength(0);
+    expect(r.bugReports.get(r.id)?.state).toBe("pending");
   });
 });

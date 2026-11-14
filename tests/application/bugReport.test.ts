@@ -69,7 +69,7 @@ describe("bug-report command", () => {
   test("a decided report still blocks a repeat inside the day", async () => {
     const { deps } = setup();
     await run(deps, REPORT);
-    await run(deps, "bug-report reject 1", actor(), OWNER);
+    deps.bugReports!.decide(1, "rejected", 1);
     expect(await run(deps, REPORT)).toContain("Already reported as bug #1 (rejected)");
     expect(slackCalls.posts).toHaveLength(1);
   });
@@ -110,54 +110,23 @@ describe("bug-report command", () => {
   });
 });
 
-describe("bug-report approve / reject", () => {
-  test("the owner's approve, from the DM, settles the message and hands the turn the fix", async () => {
+describe("bug-report approve / reject from a turn", () => {
+  test("an owner-actor brain run in the owner's DM, with no press, cannot approve or reject", async () => {
     const { deps, bugReports } = setup();
     await run(deps, REPORT);
-    const out = await run(deps, "bug-report approve 1", actor(), OWNER);
-    expect(out).toContain("approved by the owner");
-    expect(out).toContain(LINK);
-    expect(out).toContain("dedupe on message ts");
-    expect(bugReports.get(1)?.state).toBe("approved");
-    expect(slackCalls.settled).toHaveLength(1);
-    expect(slackCalls.settled[0]).toMatchObject({ channel: OWNER, ts: "notice-1" });
-    expect(slackCalls.settled[0]!.text).toContain("approved by");
-  });
-
-  test("the owner's reject marks it rejected and settles the message", async () => {
-    const { deps, bugReports } = setup();
-    await run(deps, REPORT);
-    expect(await run(deps, "bug-report reject 1", actor(), OWNER)).toContain("rejected");
-    expect(bugReports.get(1)?.state).toBe("rejected");
-    expect(slackCalls.settled[0]!.text).toContain("rejected by");
-  });
-
-  test("anyone but the owner is refused and nothing changes", async () => {
-    const { deps, bugReports } = setup();
-    await run(deps, REPORT);
-    for (const role of ["pal", "executer", "admin"] as const) {
-      const who = actor({ slackId: `U-${role}`, role });
-      expect(await run(deps, "bug-report approve 1", who, OWNER)).toContain("Only the owner");
-      expect(await run(deps, "bug-report reject 1", who, OWNER)).toContain("Only the owner");
+    for (const line of ["bug-report approve 1", "bug-report reject 1", "bug-report APPROVE 1"]) {
+      expect(await run(deps, line, actor(), OWNER)).toContain("only by the owner pressing the button");
     }
     expect(bugReports.get(1)?.state).toBe("pending");
     expect(slackCalls.settled).toHaveLength(0);
   });
 
-  test("only from the DM the question was asked in", async () => {
+  test("nobody else's brain run can decide it either", async () => {
     const { deps, bugReports } = setup();
     await run(deps, REPORT);
-    expect(await run(deps, "bug-report approve 1", actor(), "C1")).toContain("decided from the DM");
+    for (const role of ["pal", "executer", "admin"] as const) {
+      expect(await run(deps, "bug-report approve 1", actor({ slackId: `U-${role}`, role }), OWNER)).toContain("pressing the button");
+    }
     expect(bugReports.get(1)?.state).toBe("pending");
-  });
-
-  test("a second press changes nothing, and an unknown id says so", async () => {
-    const { deps } = setup();
-    await run(deps, REPORT);
-    await run(deps, "bug-report approve 1", actor(), OWNER);
-    expect(await run(deps, "bug-report reject 1", actor(), OWNER)).toContain("already approved");
-    expect(await run(deps, "bug-report approve 1", actor(), OWNER)).toContain("already approved");
-    expect(await run(deps, "bug-report approve 9", actor(), OWNER)).toContain("no bug report");
-    expect(slackCalls.settled).toHaveLength(1);
   });
 });

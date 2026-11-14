@@ -51,6 +51,7 @@ import type { CommandApprovalRepo } from "../infrastructure/db/commandApprovalRe
 import type { CloudwatchDeps } from "./cloudwatch.ts";
 import type { LoopApprovalDeps } from "./loopApproval.ts";
 import type { LearningApprovalDeps } from "./learningApproval.ts";
+import type { BugReportApprovalDeps } from "./bugReportApproval.ts";
 import type { SettingsRepo } from "../infrastructure/db/settingsRepo.ts";
 import { requestAccess } from "./accessRequests.ts";
 import type { CommandTickets } from "./commandTickets.ts";
@@ -108,6 +109,8 @@ export type HandleMessageDeps = {
   journeys?: JourneyRepo;
   /** The bug reports the bot raised about itself, for the `bug-report` command. */
   bugReports?: BugReportRepo;
+  /** The owner's Approve / Reject on a bug report, decided by the Slack listener in code. */
+  bugReportApproval?: BugReportApprovalDeps;
   /** Recurring prompts, for the `loop` command. */
   loops?: LoopRepo;
   /** Owner approval of a script loop a turn wrote, and its Approve / Reject buttons. */

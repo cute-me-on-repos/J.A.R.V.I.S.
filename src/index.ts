@@ -636,6 +636,7 @@ const main = async () => {
     reminders,
     journeys,
     bugReports,
+    bugReportApproval: { bugReports, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId },
     loops,
     loopApproval,
     learningApproval,

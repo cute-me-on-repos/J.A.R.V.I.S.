@@ -4,15 +4,16 @@
  * A chat turn can only post in the channel it runs in, so from someone else's
  * thread it could not reach the owner. The internal `bug-report` command (the
  * brain's own turn only) DMs the owner what broke, where, why and the plan to
- * fix it, with Approve / Reject. The press comes back to the owner's DM thread
- * as a `[block kit event]` turn (the ids are `jv:` like every element of the
- * model's), and that turn runs `bug-report approve|reject <id>`, where the
- * owner check lives, in code.
+ * fix it, with Approve / Reject. A press is decided in code by its own Slack
+ * listener (application/bugReportApproval.ts), never by a model turn, and only
+ * an approve starts the fix, in the notice's thread, as the owner.
  */
 import { cleanLine, tokenize, unwrapLink } from "./journey.ts";
 
-export const BUG_APPROVE_ACTION = "jv:bug-report:approve";
-export const BUG_REJECT_ACTION = "jv:bug-report:reject";
+/** Buttons with this prefix are decided in code by their own listener, never a turn for the model. */
+export const BUG_REPORT_ACTION_PREFIX = "jv:bug-report:";
+export const BUG_APPROVE_ACTION = `${BUG_REPORT_ACTION_PREFIX}approve`;
+export const BUG_REJECT_ACTION = `${BUG_REPORT_ACTION_PREFIX}reject`;
 
 export type BugReportState = "pending" | "approved" | "rejected";
 
@@ -77,10 +78,10 @@ export const approvalText = (id: number, i: BugReportInput): string =>
 export const settledText = (id: number, i: BugReportInput, kind: "approved" | "rejected", by: string): string =>
   `🐞 bug #${id} - ${kind === "approved" ? "approved by" : "rejected by"} <@${by}>${kind === "approved" ? ", fixing it" : ", leaving it"}\n*Issue:* ${i.issue}\n<${i.thread}|the thread>`;
 
-/** What the turn that ran `approve` is told to do. */
+/** What the fix turn the owner's Approve press starts is told to do. */
 export const approvedBrief = (id: number, i: BugReportInput): string =>
   [
-    `Bug #${id} is approved by the owner: fix it now, in the usual way (a worktree and a PR), and tell the owner here when it is up.`,
+    `Bug #${id} is approved by the owner (they pressed Approve): this is the owner asking for the fix, so fix it now, in the usual way (a worktree and a PR), and tell the owner here when it is up.`,
     `thread: ${i.thread}`,
     `issue: ${i.issue}`,
     ...(i.summary ? [`cause: ${i.summary}`] : []),

@@ -19,6 +19,8 @@ import { decideCloudwatch } from "../../application/cloudwatch.ts";
 import { decideLoop } from "../../application/loopApproval.ts";
 import { LOOP_ACTION_PREFIX } from "../../domain/loop.ts";
 import { decideLearningPress } from "../../application/learningApproval.ts";
+import { bugPressNotice, decideBugReportPress, type BugReportApprovalDeps } from "../../application/bugReportApproval.ts";
+import { BUG_REPORT_ACTION_PREFIX } from "../../domain/bugReport.ts";
 import { LEARNING_ACTION_PREFIX, refusalText } from "../../domain/learning.ts";
 import { CODE_ACTION_PREFIX } from "../../domain/cloudwatch.ts";
 import { forHowLong } from "../../domain/runControl.ts";
@@ -710,6 +712,7 @@ export const createKitListeners = (
   handle: (msg: Incoming) => Promise<void>,
   log: (msg: string) => void,
   inboxOf: (context: InboxContext) => Incoming["inbox"] = () => undefined,
+  bugReportApproval?: BugReportApprovalDeps,
 ) => {
   type Context = InboxContext & { teamId?: string };
   const kitTurn = async (client: unknown, context: Context | undefined, userId: string, thread: KitThread, text: string) => {
@@ -757,6 +760,41 @@ export const createKitListeners = (
     return false;
   };
 
+  /**
+   * Approve / Reject on a bug report the bot raised about itself. Decided HERE
+   * and never handed to the model (`onKitAction` skips `BUG_REPORT_ACTION_PREFIX`):
+   * an owner turn in the owner's DM would pass every check a command could make.
+   * Only an approve starts the fix, in the notice's thread, as the owner.
+   */
+  const onBugReportPress = async ({ ack, body, action, client, context }: KitActionArgs) => {
+    await ack();
+    const by = body.user?.id;
+    const value = action.value;
+    if (!by || !value || !bugReportApproval) return;
+    try {
+      const outcome = await decideBugReportPress(bugReportApproval, {
+        slackUserId: by,
+        actionId: action.action_id ?? "",
+        value,
+        channel: body.channel?.id,
+        messageTs: body.message?.ts,
+      });
+      log(`bug report press ${outcome.kind} by ${by}`);
+      const notice = bugPressNotice(outcome);
+      const channel = body.channel?.id;
+      if (notice && channel) {
+        await (client as KitClient).chat
+          .postEphemeral?.({ channel, user: by, thread_ts: body.message?.thread_ts ?? body.message?.ts, text: notice })
+          .catch(logAndIgnore("bug report press notice"));
+      }
+      if (outcome.kind === "approved") {
+        await kitTurn(client, context, by, { channelId: outcome.channel, threadTs: outcome.threadTs }, outcome.brief);
+      }
+    } catch (err) {
+      log(`bug report press failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const onKitAction = async ({ ack, body, action, client, context }: KitActionArgs) => {
     await ack();
     const by = body.user?.id;
@@ -766,7 +804,8 @@ export const createKitListeners = (
     if (
       actionId.startsWith(CODE_ACTION_PREFIX) ||
       actionId.startsWith(LOOP_ACTION_PREFIX) ||
-      actionId.startsWith(LEARNING_ACTION_PREFIX)
+      actionId.startsWith(LEARNING_ACTION_PREFIX) ||
+      actionId.startsWith(BUG_REPORT_ACTION_PREFIX)
     ) return;
     const modal = body.view;
     const thread: KitThread | undefined = modal
@@ -917,7 +956,7 @@ export const createKitListeners = (
     await kitTurn(client, context, by, thread, text);
   };
 
-  return { onKitAction, onKitView };
+  return { onKitAction, onKitView, onBugReportPress };
 };
 
 /** The calls retiring open questions makes. */
@@ -1623,7 +1662,8 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
   }) as never);
 
 
-  const { onKitAction, onKitView } = createKitListeners(deps.kitViews, handle, log, inboxOf);
+  const { onKitAction, onKitView, onBugReportPress } = createKitListeners(deps.kitViews, handle, log, inboxOf, deps.bugReportApproval);
+  app.action(new RegExp(`^${BUG_REPORT_ACTION_PREFIX}`), onBugReportPress as never);
   app.action(KIT_PATTERN, onKitAction as never);
   app.view({ callback_id: KIT_PATTERN, type: "view_submission" }, onKitView as never);
   app.view({ callback_id: KIT_PATTERN, type: "view_closed" }, onKitView as never);
