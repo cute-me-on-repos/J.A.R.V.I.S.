@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fmtSlackTs,
   get,
@@ -87,13 +87,24 @@ export function ConsolePage() {
     }
   }, []);
 
+  /** What is on screen now, so an answer for a channel or thread the user already left is dropped, not shown. */
+  const live = useRef({ channel: "", thread: "" });
+  live.current = { channel, thread: thread?.root ?? "" };
+  const [memoryError, setMemoryError] = useState("");
+
+  /** The DB badges. Never fatal: when it fails only the badges go, Slack history still renders. */
   const loadMemory = useCallback(async (ch: string) => {
-    const [chans, threads] = await Promise.all([
-      get<MemoryChannel[]>("memory/channels"),
-      ch ? get<MemoryThread[]>(`memory/threads?channel=${encodeURIComponent(ch)}`) : Promise.resolve([]),
-    ]);
-    setMemChannels(chans);
-    setMemThreads(threads);
+    try {
+      const [chans, threads] = await Promise.all([
+        get<MemoryChannel[]>("memory/channels"),
+        ch ? get<MemoryThread[]>(`memory/threads?channel=${encodeURIComponent(ch)}`) : Promise.resolve([]),
+      ]);
+      setMemChannels(chans);
+      if (live.current.channel === ch) setMemThreads(threads);
+      setMemoryError("");
+    } catch (e) {
+      setMemoryError(e instanceof Error ? e.message : String(e));
+    }
   }, []);
 
   useEffect(() => {
@@ -105,97 +116,146 @@ export function ConsolePage() {
     });
   }, [run]);
 
-  const loadHistory = useCallback(
-    (ch: string, lim: number) =>
-      run(async () => {
-        setThread(null);
-        const [page] = await Promise.all([
-          get<{ messages: SlackMessage[]; nextCursor?: string }>(`slack/history?channel=${encodeURIComponent(ch)}&limit=${lim}`),
-          loadMemory(ch),
-        ]);
+  type Page = { messages: SlackMessage[]; nextCursor?: string };
+  const historyUrl = (ch: string, lim: number, before?: string) =>
+    `slack/history?channel=${encodeURIComponent(ch)}&limit=${lim}${before === undefined ? "" : `&cursor=${encodeURIComponent(before)}`}`;
+
+  /** Reload the newest page and the badges; leaves an open thread alone. */
+  const reloadChannel = useCallback(
+    async (ch: string, lim: number) => {
+      const memory = loadMemory(ch);
+      const page = await get<Page>(historyUrl(ch, lim));
+      if (live.current.channel === ch) {
         setMessages(page.messages);
         setCursor(page.nextCursor);
-      }),
-    [run, loadMemory],
+      }
+      await memory;
+    },
+    [loadMemory],
   );
 
-  const loadOlder = () =>
-    run(async () => {
-      const page = await get<{ messages: SlackMessage[]; nextCursor?: string }>(
-        `slack/history?channel=${encodeURIComponent(channel)}&limit=${limit}&cursor=${encodeURIComponent(cursor ?? "")}`,
-      );
+  // Another channel: its own history, no thread, nothing carried over.
+  useEffect(() => {
+    if (!channel) return;
+    setThread(null);
+    setMessages([]);
+    setCursor(undefined);
+    setMemThreads([]);
+    run(() => reloadChannel(channel, limit));
+    // limit changes reload the same channel without closing its thread (below)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel]);
+
+  const firstLimit = useRef(true);
+  useEffect(() => {
+    if (firstLimit.current) {
+      firstLimit.current = false;
+      return;
+    }
+    if (channel) run(() => reloadChannel(channel, limit));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [limit]);
+
+  const loadOlder = () => {
+    const ch = channel;
+    return run(async () => {
+      const page = await get<Page>(historyUrl(ch, limit, cursor ?? ""));
+      if (live.current.channel !== ch) return;
       // older page is chronologically before what we have - prepend it
       setMessages((cur) => [...page.messages, ...cur]);
       setCursor(page.nextCursor);
     }, "loading older...");
-
-  useEffect(() => {
-    if (channel) loadHistory(channel, limit);
-  }, [channel, limit, loadHistory]);
-
-  const fetchThread = (root: string) => get<SlackMessage[]>(`slack/thread?channel=${encodeURIComponent(channel)}&ts=${root}`);
-
-  const openThread = (m: SlackMessage) =>
-    run(async () => {
-      const root = m.threadTs ?? m.ts;
-      setThread({ root, messages: await fetchThread(root) });
-      setThreadComposer("");
-    });
-
-  const refresh = () => {
-    loadHistory(channel, limit);
   };
 
-  const refreshThread = (root: string) => run(async () => setThread({ root, messages: await fetchThread(root) }));
+  const fetchThread = (ch: string, root: string) => get<SlackMessage[]>(`slack/thread?channel=${encodeURIComponent(ch)}&ts=${root}`);
 
-  const send = (threadTs?: string) =>
+  /** Re-read the open thread unless the user has moved on from it meanwhile. */
+  const reloadThread = async (ch: string, root: string) => {
+    const msgs = await fetchThread(ch, root);
+    if (live.current.channel === ch && live.current.thread === root) setThread({ root, messages: msgs });
+  };
+
+  const openThread = (m: SlackMessage) => {
+    const ch = channel;
+    const root = m.threadTs ?? m.ts;
+    return run(async () => {
+      const msgs = await fetchThread(ch, root);
+      if (live.current.channel !== ch) return;
+      setThread({ root, messages: msgs });
+      setThreadComposer("");
+    });
+  };
+
+  const refresh = () =>
     run(async () => {
-      const text = threadTs ? threadComposer : composer;
-      await post("slack/post", { channel, text, threadTs });
+      await reloadChannel(channel, limit);
+      if (thread) await reloadThread(channel, thread.root);
+    });
+
+  const send = (threadTs?: string) => {
+    const ch = channel;
+    const body = threadTs ? threadComposer : composer;
+    return run(async () => {
+      await post("slack/post", { channel: ch, text: body, threadTs });
+      if (live.current.channel !== ch) return;
       if (threadTs) {
         setThreadComposer("");
-        setThread({ root: threadTs, messages: await fetchThread(threadTs) });
+        await reloadThread(ch, threadTs);
       } else {
         setComposer("");
       }
-      const page = await get<{ messages: SlackMessage[]; nextCursor?: string }>(`slack/history?channel=${encodeURIComponent(channel)}&limit=${limit}`);
-      setMessages(page.messages);
-      setCursor(page.nextCursor);
+      await reloadChannel(ch, limit);
     }, "posting...");
+  };
 
-  const draft = (threadTs?: string) =>
-    run(async () => {
-      const { draft } = await post<{ draft: string }>("slack/draft", { channel, threadTs });
-      if (threadTs) setThreadComposer(draft);
-      else setComposer(draft);
+  const draft = (threadTs?: string) => {
+    const ch = channel;
+    return run(async () => {
+      const { draft } = await post<{ draft: string }>("slack/draft", { channel: ch, threadTs });
+      if (live.current.channel !== ch) return;
+      if (threadTs) {
+        if (live.current.thread === threadTs) setThreadComposer(draft);
+      } else {
+        setComposer(draft);
+      }
     }, "drafting...");
+  };
 
-  const saveEdit = () =>
-    run(async () => {
+  const saveEdit = () => {
+    const ch = channel;
+    return run(async () => {
       if (!editing) return;
-      await post("slack/update", { channel, ts: editing.ts, text: editing.text });
+      await post("slack/update", { channel: ch, ts: editing.ts, text: editing.text });
       setEditing(null);
-      refresh();
-      if (thread) await refreshThread(thread.root);
+      await refreshAll(ch);
     }, "saving...");
+  };
+
+  const refreshAll = async (ch: string) => {
+    await reloadChannel(ch, limit);
+    const root = live.current.thread;
+    if (root && live.current.channel === ch) await reloadThread(ch, root);
+  };
 
   const del = (m: SlackMessage) => {
     if (!confirm("Delete this message in Slack?")) return;
+    const ch = channel;
     run(async () => {
-      await post("slack/delete", { channel, ts: m.ts });
-      refresh();
-      if (thread) await refreshThread(thread.root);
+      await post("slack/delete", { channel: ch, ts: m.ts });
+      await refreshAll(ch);
     }, "deleting...");
   };
 
-  /** Forget the bot's stored turns only - never a Slack message. */
+  /** Forget the bot's stored turns (and the sessions that would replay them) - never a Slack message. */
   const forget = (scope: "channel" | "thread", name: string, count: number, root?: string) => {
+    if (scope === "thread" && !root) return; // never fall through to a channel-wide delete
     const what = scope === "thread" ? "this thread" : `the whole of ${name} (every thread in it)`;
     if (!confirm(`Delete ${count} stored turn${count === 1 ? "" : "s"} for ${what} from the bot's DB?\n\nThe bot forgets them. Nothing in Slack is touched.`)) return;
+    const ch = channel;
     run(async () => {
-      await post("conversation/clear", { channel, threadTs: scope === "thread" ? root : undefined });
-      setCleared((cur) => new Set([...cur, scope === "thread" && root ? threadKey(channel, root) : channel]));
-      await loadMemory(channel);
+      await post("conversation/clear", { channel: ch, ...(scope === "thread" ? { threadTs: root } : {}) });
+      setCleared((cur) => new Set([...cur, scope === "thread" && root ? threadKey(ch, root) : ch]));
+      await loadMemory(ch);
     }, "deleting from DB...");
   };
 
@@ -211,6 +271,7 @@ export function ConsolePage() {
   const channelCount = memByChannel.get(channel)?.count ?? 0;
   const current = convos.find((c) => c.id === channel);
   const currentName = current ? `${glyph(current)} ${current.name}` : channel;
+  const threadCleared = (ch: string, root: string) => cleared.has(threadKey(ch, root)) || cleared.has(ch);
   const threadCount = thread ? memByThread.get(thread.root)?.count ?? 0 : 0;
 
   const visible = convos.filter((c) => c.name.toLowerCase().includes(convoFilter.toLowerCase()));
@@ -250,7 +311,7 @@ export function ConsolePage() {
         {!inThread && (m.replyCount > 0 || stored > 0) && (
           <button className="thread-chip" onClick={() => openThread(m)} title="open thread">
             {m.replyCount > 0 ? `${m.replyCount} ${m.replyCount === 1 ? "reply" : "replies"}` : "thread"}
-            <MemoryBadge count={stored} cleared={cleared.has(threadKey(channel, m.threadTs ?? m.ts))} what="thread" />
+            <MemoryBadge count={stored} cleared={threadCleared(channel, m.threadTs ?? m.ts)} what="thread" />
           </button>
         )}
       </div>
@@ -281,6 +342,7 @@ export function ConsolePage() {
       </p>
       {error && <div className="banner error">{error}</div>}
       {status && <div className="banner ok">{status}</div>}
+      {memoryError && <div className="banner error">DB memory badges unavailable: {memoryError}</div>}
 
       <div className={`slack${thread ? " with-thread" : ""}`}>
         <aside className="slack-side">
@@ -357,7 +419,7 @@ export function ConsolePage() {
           <aside className="slack-thread">
             <header className="slack-head">
               <strong>Thread</strong>
-              <MemoryBadge count={threadCount} cleared={cleared.has(threadKey(channel, thread.root))} what="thread" />
+              <MemoryBadge count={threadCount} cleared={threadCleared(channel, thread.root)} what="thread" />
               <span className="slack-head-actions">
                 <button
                   className="danger"

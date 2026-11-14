@@ -202,10 +202,27 @@ describe("dashboard use cases", () => {
     expect(app.memoryChannels()).toEqual([{ channelId: "C1", count: 4, lastAt: 9 }]);
     expect(app.memoryThreads("")).toEqual([]);
     expect(app.memoryThreads(" C1 ")).toEqual([{ threadTs: "C1.1", count: 2, lastAt: 7 }]);
-    app.clearConversation("  ");
+    expect(app.clearConversation("  ")).toMatchObject({ ok: false });
     app.clearConversation(" C1 ");
     app.clearConversation("C1", " 10.5 ");
     expect(cleared).toEqual(["C1", "C1/10.5"]);
+  });
+
+  test("clearing drops the thread sessions too, and a blank thread never widens to the channel", () => {
+    const drops: string[] = [];
+    const { app, cleared } = ports({
+      threadSessions: { drop: (c, t) => drops.push(`${c}/${t}`), dropChannel: (c) => drops.push(c) },
+    });
+    expect(app.clearConversation("C1", "10.5")).toEqual({ ok: true, value: null });
+    expect(app.clearConversation("C1")).toEqual({ ok: true, value: null });
+    expect(drops).toEqual(["C1/10.5", "C1"]);
+    for (const blank of ["", "  ", null]) {
+      expect(app.clearConversation("C1", blank)).toMatchObject({ ok: false });
+    }
+    expect(app.clearConversation("  ", "10.5")).toMatchObject({ ok: false });
+    // nothing beyond the two real clears ran
+    expect(cleared).toEqual(["C1/10.5", "C1"]);
+    expect(drops).toHaveLength(2);
   });
 
   test("usage reports not recording without a store, and clamps its window", async () => {

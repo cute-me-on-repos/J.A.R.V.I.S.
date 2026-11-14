@@ -129,6 +129,14 @@ export type DashboardPorts = {
   readonly kitViews?: { readonly save: (view: KitView, at: number) => string };
   /** The workspace's members, cached, for the Users page's search. Absent: no search, paste an id. */
   readonly directory?: SlackDirectory;
+  /**
+   * The CLI session bound to each thread. A clear forgets these too: a thread
+   * that resumes its session still remembers everything, whatever `messages` holds.
+   */
+  readonly threadSessions?: {
+    readonly drop: (channelId: string, threadTs: string) => void;
+    readonly dropChannel: (channelId: string) => void;
+  };
   /** Aggregates for the overview charts. */
   readonly stats?: StatsRepo;
   /** The host's `Date#getTimezoneOffset`, so a chart's days are the reader's days. */
@@ -615,15 +623,24 @@ export const createDashboardService = (p: DashboardPorts) => {
   },
 
   /**
-   * Forget stored turns - the bot's memory only, Slack is never touched. With a
-   * `threadTs` just that thread; without, the whole channel (every thread).
+   * Forget stored turns and the thread sessions that would replay them - the bot's
+   * memory only, Slack is never touched. With a `threadTs` just that thread;
+   * without, the whole channel (every thread).
    */
-  clearConversation: (channelIn: unknown, threadIn?: unknown) => {
+  clearConversation: (channelIn: unknown, threadIn?: unknown): Outcome<null> => {
     const channel = text(channelIn);
-    const thread = text(threadIn);
-    if (!channel) return;
-    if (thread) p.messages.clearThread(channel, thread);
-    else p.messages.clearChannel(channel);
+    if (!channel) return refuse("Channel required");
+    // A destructive scope fails closed: a thread that was asked for but is blank must never widen to the channel.
+    if (threadIn !== undefined) {
+      const thread = text(threadIn);
+      if (!thread) return refuse("Thread required");
+      p.messages.clearThread(channel, thread);
+      p.threadSessions?.drop(channel, thread);
+    } else {
+      p.messages.clearChannel(channel);
+      p.threadSessions?.dropChannel(channel);
+    }
+    return done(null);
   },
 
   commands: () => ({

@@ -489,6 +489,5 @@ ol.rank { list-style: none; margin: 4px 0 6px; padding: 0; display: flex; flex-d
 .rank-note { font-size: 12px; margin-top: 2px; }
 .rank-empty { margin: 8px 0 12px; font-size: 13px; }
 @media (max-width: 760px) {
-  .convo-scroll .bubble { max-width: 100%; }
   .add-user-row .seg, .add-user-row > button[type="submit"] { flex: 1 1 auto; }
 }
