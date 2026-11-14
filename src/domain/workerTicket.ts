@@ -1,7 +1,7 @@
 /**
  * Worker tickets: what an Orca worker may do as the GitHub App, and for how long.
  *
- * A turn ticket (`commandTickets`) lives 20 minutes and carries its caller's
+ * A turn ticket (`commandTickets`) lives 3 hours (`TICKET_TTL_MS`) and carries its caller's
  * whole role, which is right for a turn and useless for an Orca worker that
  * outlives it. A worker ticket is the narrow version: one repo, an explicit
  * allow-list of app actions, bound to one dispatch. Pure rules only; the store
