@@ -53,6 +53,12 @@ export type MessageRepo = {
    * gets, so a conversation cannot bleed into an unrelated one next door.
    */
   recentForThread: (channelId: string, threadTs: string, limit: number) => StoredMessage[];
+  /**
+   * The newest `user` turns of a channel (one thread when given) whose text opens
+   * with one of `prefixes`, oldest-first: the console's hidden steer turns, found
+   * without reading the whole history.
+   */
+  userTurnsStartingWith: (channelId: string, prefixes: readonly string[], limit: number, threadTs?: string) => StoredMessage[];
   clearChannel: (channelId: string) => number;
   count: () => number;
   /** Distinct channels with a turn count, most-recently-active first. */
@@ -139,6 +145,20 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
       recentStmt.all(channelId, Math.max(0, limit)).map(toMessage),
     recentForThread: (channelId, threadTs, limit) =>
       recentThreadStmt.all(channelId, threadTs, Math.max(0, limit)).map(toMessage),
+    userTurnsStartingWith: (channelId, prefixes, limit, threadTs) => {
+      if (prefixes.length === 0 || limit <= 0) return [];
+      // `_` and `%` are wildcards in LIKE: escaped, so a prefix only ever matches itself.
+      const likes = prefixes.map(() => "content LIKE ? ESCAPE '\\'").join(" OR ");
+      const args = prefixes.map((p) => `${p.replace(/[\\%_]/g, "\\$&")}%`);
+      const sql = `SELECT * FROM (
+         SELECT * FROM messages WHERE channel_id = ? AND role = 'user' AND (${likes})${threadTs === undefined ? "" : " AND thread_ts = ?"}
+         ORDER BY id DESC LIMIT ?
+       ) ORDER BY id ASC`;
+      const rows = db
+        .query<Row, (string | number)[]>(sql)
+        .all(channelId, ...args, ...(threadTs === undefined ? [] : [threadTs]), limit);
+      return rows.map(toMessage);
+    },
     clearChannel: (channelId) => {
       const res = clearStmt.run({ $channelId: channelId });
       return Number(res.changes);

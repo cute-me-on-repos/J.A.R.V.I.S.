@@ -93,4 +93,15 @@ describe("name resolver", () => {
     expect(labels.C7).toBe("#c7 (C7)");
     expect(peak).toBe(3);
   });
+
+  test("channel names are bare, empty for DMs and unknowns, and cached like labels", async () => {
+    const { calls, lookups } = fake(
+      { C1: { kind: "channel", name: "#ops" }, G1: { kind: "group", name: "secret" }, D1: { kind: "im", userId: "U1" }, M1: { kind: "mpim" } },
+      {},
+    );
+    const names = createNameResolver({ lookups, clock: () => 0 });
+    expect(await names.channelNames(["C1", "G1", "D1", "M1", "C9", "C1"])).toEqual({ C1: "ops", G1: "secret", D1: "", M1: "", C9: "" });
+    await names.channelNames(["C1", "G1"]);
+    expect(calls.conversation).toEqual(["C1", "G1", "D1", "M1", "C9"]);
+  });
 });

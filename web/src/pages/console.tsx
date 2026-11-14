@@ -8,6 +8,10 @@ import {
   type SlackConversation,
   type SlackMessage,
 } from "../api.ts";
+import { Mrkdwn, useSlackNames } from "../ui/mrkdwn.tsx";
+import { copyText, messagePermalink, type PermalinkRef } from "../ui/permalink.ts";
+import { InternalRow } from "../internalMessages.tsx";
+import { mergeTimeline, oldestOnScreen, pickInternal, type InternalMessage } from "../internalTimeline.ts";
 
 type Mode = "all" | "own" | "mentions";
 type Editing = { ts: string; text: string } | null;
@@ -67,11 +71,18 @@ export function ConsolePage() {
   const [threadComposer, setThreadComposer] = useState("");
   const [memChannels, setMemChannels] = useState<MemoryChannel[]>([]);
   const [memThreads, setMemThreads] = useState<MemoryThread[]>([]);
+  /** Messages the bot steered sessions with that never reached Slack (tell, brief, ...), from its DB. */
+  const [internal, setInternal] = useState<InternalMessage[]>([]);
+  const [showInternal, setShowInternal] = useState(true);
   /** Channels/threads whose stored memory was deleted from this page, to tell "cleared" from "never stored". */
   const [cleared, setCleared] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState("");
+  /** The workspace url, asked of the server once (cached there too); every link is then built here. */
+  const workspace = useRef<Promise<string> | undefined>(undefined);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const run = useCallback(async (fn: () => Promise<void>, note = "") => {
     setError("");
@@ -104,6 +115,14 @@ export function ConsolePage() {
       setMemoryError("");
     } catch (e) {
       setMemoryError(e instanceof Error ? e.message : String(e));
+    }
+    // Apart from the badges: losing the hidden messages must not take them down, nor the reverse.
+    try {
+      const found = await get<{ items: InternalMessage[] }>(`memory/internal?channel=${encodeURIComponent(ch)}`);
+      if (live.current.channel === ch) setInternal(found.items);
+    } catch (e) {
+      if (live.current.channel === ch) setInternal([]);
+      setMemoryError((cur) => cur || `hidden messages unavailable: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, []);
 
@@ -141,6 +160,7 @@ export function ConsolePage() {
     setMessages([]);
     setCursor(undefined);
     setMemThreads([]);
+    setInternal([]);
     run(() => reloadChannel(channel, limit));
     // limit changes reload the same channel without closing its thread (below)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -175,9 +195,10 @@ export function ConsolePage() {
     if (live.current.channel === ch && live.current.thread === root) setThread({ root, messages: msgs });
   };
 
-  const openThread = (m: SlackMessage) => {
+  const openThread = (m: SlackMessage) => openThreadRoot(m.threadTs ?? m.ts);
+
+  const openThreadRoot = (root: string) => {
     const ch = channel;
-    const root = m.threadTs ?? m.ts;
     return run(async () => {
       const msgs = await fetchThread(ch, root);
       if (live.current.channel !== ch) return;
@@ -237,6 +258,25 @@ export function ConsolePage() {
     if (root && live.current.channel === ch) await reloadThread(ch, root);
   };
 
+  /** Slack's "Copy link": the real permalink to a message, built locally, with a "copied" toast. */
+  const copyLink = async (ref: Omit<PermalinkRef, "channel">) => {
+    setError("");
+    try {
+      workspace.current ??= get<{ url: string | null }>("slack/workspace").then((w) => {
+        if (!w.url) throw new Error("Slack gave no workspace url");
+        return w.url;
+      });
+      const url = messagePermalink(await workspace.current, { channel, ...ref });
+      if (!(await copyText(url))) throw new Error(`Could not copy - the link is ${url}`);
+      setCopied("Link copied");
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(""), 1800);
+    } catch (e) {
+      workspace.current = undefined; // a failed lookup is retried on the next click
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const del = (m: SlackMessage) => {
     if (!confirm("Delete this message in Slack?")) return;
     const ch = channel;
@@ -266,6 +306,11 @@ export function ConsolePage() {
     return true;
   });
 
+  // One batched name lookup for every mention in the list and the open thread.
+  const slackNames = useSlackNames([...messages, ...(thread?.messages ?? [])].map((m) => m.text));
+  /** A `<#C…>` pill opens that channel only when it is in the sidebar. */
+  const channelLink = (id: string) => (convos.some((c) => c.id === id) ? () => setChannel(id) : undefined);
+
   const memByChannel = useMemo(() => new Map(memChannels.map((c) => [c.channelId, c])), [memChannels]);
   const memByThread = useMemo(() => new Map(memThreads.map((t) => [t.threadTs, t])), [memThreads]);
   const channelCount = memByChannel.get(channel)?.count ?? 0;
@@ -280,6 +325,15 @@ export function ConsolePage() {
     { title: "Direct messages", items: visible.filter((c) => c.kind === "im" || c.kind === "mpim") },
   ];
 
+  /** Slack messages with the hidden ones interleaved by time (just the Slack ones when "show internal" is off or a filter hides them). */
+  const timeline = (msgs: readonly SlackMessage[], threadTs?: string, hasOlder = false) => {
+    const hidden =
+      showInternal && mode === "all"
+        ? pickInternal(internal, { threadTs, since: oldestOnScreen(msgs, hasOlder), filter })
+        : [];
+    return mergeTimeline(msgs, hidden);
+  };
+
   const marker = (m: SlackMessage) =>
     m.own ? <span className="badge assistant" title="your message">✎</span> : m.mentionsBot ? <span className="badge user" title="mentions you">@</span> : <span className="mk-space" />;
 
@@ -293,6 +347,7 @@ export function ConsolePage() {
           <span className="muted">{fmtSlackTs(m.ts)}</span>
           <span className="msg-actions">
             {!inThread && <button className="link" onClick={() => openThread(m)}>reply</button>}
+            <button className="link" onClick={() => copyLink({ ts: m.ts, threadTs: m.threadTs })} title="copy the Slack link to this message">copy link</button>
             {m.own && <button className="link" onClick={() => setEditing({ ts: m.ts, text: m.text })}>edit</button>}
             {m.own && <button className="link danger-link" onClick={() => del(m)}>delete</button>}
           </span>
@@ -306,7 +361,7 @@ export function ConsolePage() {
             </div>
           </div>
         ) : (
-          <div className="msg-body">{m.text || <span className="muted">(no text)</span>}</div>
+          <div className="msg-body">{m.text ? <Mrkdwn text={m.text} names={slackNames} openChannel={channelLink} /> : <span className="muted">(no text)</span>}</div>
         )}
         {!inThread && (m.replyCount > 0 || stored > 0) && (
           <button className="thread-chip" onClick={() => openThread(m)} title="open thread">
@@ -343,6 +398,7 @@ export function ConsolePage() {
       {error && <div className="banner error">{error}</div>}
       {status && <div className="banner ok">{status}</div>}
       {memoryError && <div className="banner error">DB memory badges unavailable: {memoryError}</div>}
+      {copied && <div className="copy-toast" role="status">{copied}</div>}
 
       <div className={`slack${thread ? " with-thread" : ""}`}>
         <aside className="slack-side">
@@ -398,6 +454,10 @@ export function ConsolePage() {
                     <button key={m} className={mode === m ? "seg-on" : ""} onClick={() => setMode(m)}>{m}</button>
                   ))}
                 </div>
+                <label className="toggle" title="tell / brief / watch / nudge messages the bot stored but never posted to Slack (read-only)">
+                  <input type="checkbox" checked={showInternal} onChange={(e) => setShowInternal(e.target.checked)} />
+                  show internal{internal.length > 0 ? ` (${internal.length})` : ""}
+                </label>
               </div>
               <div className="slack-msgs">
                 <div className="load-older">
@@ -407,8 +467,10 @@ export function ConsolePage() {
                     messages.length > 0 && <span className="muted">beginning of conversation</span>
                   )}
                 </div>
-                {shown.length === 0 && <p className="muted" style={{ padding: 16 }}>No messages.</p>}
-                {shown.map((m) => Row(m))}
+                {timeline(shown, undefined, !!cursor).length === 0 && <p className="muted" style={{ padding: 16 }}>No messages.</p>}
+                {timeline(shown, undefined, !!cursor).map((e) =>
+                  e.type === "slack" ? Row(e.message) : <InternalRow key={e.message.id} m={e.message} onOpenThread={openThreadRoot} />,
+                )}
               </div>
               {Composer(composer, setComposer)}
             </>
@@ -429,10 +491,15 @@ export function ConsolePage() {
                 >
                   Delete in DB only
                 </button>
+                <button className="link" onClick={() => copyLink({ ts: thread.root })} title="copy the Slack link to the thread's first message">copy link</button>
                 <button className="link" onClick={() => setThread(null)}>close</button>
               </span>
             </header>
-            <div className="slack-msgs">{thread.messages.map((m) => Row(m, true))}</div>
+            <div className="slack-msgs">
+              {timeline(thread.messages, thread.root).map((e) =>
+                e.type === "slack" ? Row(e.message, true) : <InternalRow key={e.message.id} m={e.message} />,
+              )}
+            </div>
             {Composer(threadComposer, setThreadComposer, thread.root)}
           </aside>
         )}
